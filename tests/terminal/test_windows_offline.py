@@ -127,7 +127,7 @@ class OfflineEntry(unittest.TestCase):
             self.assertNotIn("webview2", text.lower())
             self.assertNotIn("https://", text)
             with self.assertRaises(wo.OfflineStop):
-                wo.begin(root, model, spawn=_bomb)
+                wo.begin(root, model, spawn=_bomb, check_driver=False)
 
     def test_complete_folder_starts_the_host_on_a_path_with_spaces_and_chinese(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,7 +143,7 @@ class OfflineEntry(unittest.TestCase):
                 return mock.Mock()
 
             with mock.patch("urllib.request.urlopen", _bomb), mock.patch("urllib.request.urlretrieve", _bomb):
-                report = wo.begin(root, model, port=8791, spawn=spawn)
+                report = wo.begin(root, model, port=8791, spawn=spawn, check_driver=False)
             self.assertEqual(len(seen), 1)
             argv, env, cwd = seen[0]
             self.assertTrue(argv[0].endswith("node.exe"), argv[0])
@@ -201,7 +201,7 @@ class OfflineEntry(unittest.TestCase):
             _tree(root, engine=False, dsv41=True)
             seen = []
             with mock.patch("urllib.request.urlopen", _bomb):
-                wo.begin(root, model, spawn=lambda argv, env=None, cwd=None: seen.append(argv) or mock.Mock())
+                wo.begin(root, model, spawn=lambda argv, env=None, cwd=None: seen.append(argv) or mock.Mock(), check_driver=False)
             self.assertEqual(len(seen), 1)
 
     def test_node_zip_closure_extracts_the_runtime_and_refuses_a_hole(self):
@@ -261,7 +261,7 @@ class OfflineEntry(unittest.TestCase):
     def test_launch_and_update_do_not_fetch_an_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.dict(os.environ, {"STRATA_OFFLINE_ENTRY": "1"}, clear=False), \
-                    mock.patch("strata_cli.launch.runner.subprocess.Popen", _bomb):
+                    mock.patch("urllib.request.urlopen", _bomb):
                 runner = Runner(LaunchSettings(), components_dir=tmp)
                 with self.assertRaises(LaunchError) as caught:
                     runner.ensure_engine()
@@ -412,7 +412,9 @@ class OfflineEntry(unittest.TestCase):
             root.mkdir()
             wo.write_header(model, "qwen4exp")
             _tree(root)
-            with mock.patch("sys.stdout") as out:
+            with mock.patch("sys.stdout") as out, \
+                    mock.patch.object(wo, "read_nvidia_driver", return_value=("581.80", None)), \
+                    mock.patch("strata_control.engine_component.cuda_archs_present", return_value=["sm_89"]):
                 code = wo.main(["--root", str(root), "--model", str(model), "--plan"])
             self.assertEqual(code, 0)
             printed = "".join(call.args[0] for call in out.write.call_args_list)

@@ -55,7 +55,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Python offline-entry tests
-        run: python -m unittest tests.terminal.test_windows_offline
+        run: |
+          python -m pip install jinja2
+          python -m unittest tests.terminal.test_windows_offline
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
