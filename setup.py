@@ -946,7 +946,13 @@ def ask(question, choices, default, yes):
 
 def _urlopen(req, timeout=None):
     """Every network request of this file goes through here: starting and serving never reach the network
-    (strata_control/acquisition.py), only an explicit setup, update or install does."""
+    (strata_control/acquisition.py), only an explicit setup, update or install does.
+    The offline entry refuses http(s) here as well as in download(). The install job clears
+    STRATA_NO_ACQUIRE, so acquisition.require alone would let github_reachable and the other direct
+    callers open a socket."""
+    url = getattr(req, "full_url", None) or str(req)
+    if str(url).startswith(("http://", "https://")) and os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        fail(f"the offline entry does not fetch {url}", "Nothing was downloaded.")
     acquisition.require("a download")
     try:
         return urllib.request.urlopen(req, timeout=timeout)
@@ -978,9 +984,16 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     return r
 
 
+def offline_entry() -> bool:
+    return os.environ.get("STRATA_OFFLINE_ENTRY") == "1"
+
+
 def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
     """The ~5 GB of MTP tensors (tools/mtp_fetch.py).  A timeout or a dropped connection stops one run, not the install (#3214 #3193):
     it is run again, and each run continues where the last one stopped.  The progress lines it prints are what the app shows."""
+    if os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        fail(f"missing local directory {mtp}",
+             "the offline entry does not download the draft layer. Place the prepared files there; nothing was fetched")
     cmd = [sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)]
     env = {**env, "STRATA_SOURCE": model_source()}
     for n in range(1, tries + 1):
@@ -3012,6 +3025,8 @@ def download(url, dst: Path, what=None):
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
         return
+    if str(url).startswith(("http://", "https://")) and os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        fail(f"missing local file {dst}", f"the offline entry does not fetch {what or dst.name}")
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3463,6 +3478,14 @@ def check_shards(shards):
 
 def get_llama_cpp():
     """llama.cpp at the pinned commit (ggml for the build, gguf-py for the tools, mtmd for images), as a zip: no git."""
+    if os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        # Read the install dir at call time. The offline entry never falls through to the zip below.
+        base = Path(os.environ["STRATA_INSTALL_DIR"]) if os.environ.get("STRATA_INSTALL_DIR") else home()
+        llama = base / "third_party" / "llama.cpp"
+        if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
+            return llama
+        fail(f"missing local directory {llama / 'gguf-py'} (marker {llama / 'ggml' / 'CMakeLists.txt'})",
+             "the offline entry does not download llama.cpp and does not run git or cmake")
     llama = home() / "third_party" / "llama.cpp"
     if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
         return llama
@@ -3566,7 +3589,9 @@ def pip_install(packages, what, extra=()):
     if CONTROL:                                        # the app ships these (hash-locked); nothing is installed here
         missing = control_missing_packages()
         if missing:
-            fail("this copy of Strata Control lacks " + ", ".join(missing), "reinstall the Strata app")
+            hint = ("the offline folder's Python is missing these packages; this entry does not run pip"
+                    if os.environ.get("STRATA_OFFLINE_ENTRY") == "1" else "reinstall the Strata app")
+            fail("this copy of Strata Control lacks " + ", ".join(missing), hint)
         ok(f"{what}: bundled with the app")
         return
     stamp = Path(sys.prefix) / ".strata-pip.json"
@@ -5659,6 +5684,9 @@ def cuda_apt_repo(osr):
 
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
+    if os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        fail("the offline entry does not install a compiler or the CUDA toolkit",
+             "use the engine package already in components/engine; nothing was passed to winget")
     acquisition.require("the compiler and CUDA toolkit")
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
     # #295: Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_60/sm_70; gpu["toolkit"] = 12: the
@@ -8972,10 +9000,16 @@ def mac_control_setup(a) -> int:
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         elif not (mmproj.exists() and done(mmproj)):
-            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam["mmproj"] in ISTA_FILES:
+            if offline_entry():
+                warn(f"missing local file {mmproj} (picture encoder). Pictures stay off. Nothing was downloaded.")
+                vision = "none"
+                mmproj = None
+            else:
+                download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+        if mmproj is not None and fam["mmproj"] in ISTA_FILES:
             verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
-        ok(f"vision encoder: {mmproj}")
+        if mmproj is not None:
+            ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
@@ -8993,6 +9027,9 @@ def mac_control_setup(a) -> int:
         ok(f"the experts stream from the SSD; the MTP draft layer stays on, with --spec {MF.STREAM_SPEC}")
     if use_mtp and a.mtp == "off" and not (mtp / "mtp-q2_0.gguf").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
+        use_mtp = False
+    if use_mtp and not (mtp / "mtp-q2_0.gguf").exists() and offline_entry():
+        ok("the draft layer is not among the local files, so it stays off. Nothing was downloaded.")
         use_mtp = False
     if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
         say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of MTP tensors are downloaded.")
@@ -10010,12 +10047,17 @@ def main() -> int:
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
-        else:
+        elif not mmproj.exists() and offline_entry():
+            warn(f"missing local file {mmproj} (picture encoder). Pictures stay off. Nothing was downloaded.")
+            vision = "none"
+            mmproj = None
+        elif not mmproj.exists():
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too
+        if mmproj is not None and fam.get("mmproj_sha256"):   # the NVFP4 family pins it by size and SHA-256 too
             verify_sha256(mmproj, *fam["mmproj_sha256"])
-        ok(f"vision encoder: {mmproj}")
-        if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
+        if mmproj is not None:
+            ok(f"vision encoder: {mmproj}")
+        if mmproj is not None and vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
                 "cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md")
 
@@ -10059,11 +10101,15 @@ def main() -> int:
         (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
     corrupt = (rt / "experts.bin").exists() and not prepared and mtp_corrupt(mtp, env)
-    if corrupt:
+    if corrupt and not offline_entry():
         warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
              "fetching them again and rebuilding the draft layer")
+    elif corrupt:
+        warn("the local draft layer is not usable, so it stays off. Nothing was downloaded.")
     if a.mtp == "off" and not (rt / "experts.bin").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
+    elif offline_entry() and (corrupt or not (rt / "experts.bin").exists()):
+        ok("the draft layer is not among the local files, so it stays off. Nothing was downloaded.")
     elif corrupt or not (rt / "experts.bin").exists():
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")

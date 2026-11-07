@@ -29,7 +29,7 @@ WINDOWS_OS = (
     "winmm.dll", "imm32.dll", "comctl32.dll", "comdlg32.dll", "dbghelp.dll", "psapi.dll", "pdh.dll", "powrprof.dll",
     "userenv.dll", "netapi32.dll", "wininet.dll", "winhttp.dll", "dxgi.dll", "d3d11.dll", "d3d12.dll", "dwmapi.dll",
     "dxcore.dll", "wtsapi32.dll", "ncrypt.dll", "normaliz.dll", "api-ms-win-*.dll", "ext-ms-win-*.dll", "hid.dll",
-    "opengl32.dll", "glu32.dll", "wldap32.dll", "authz.dll", "msi.dll", "propsys.dll", "uxtheme.dll", "dnsapi.dll",
+    "opengl32.dll", "glu32.dll", "wldap32.dll", "authz.dll", "msi.dll", "cabinet.dll", "propsys.dll", "uxtheme.dll", "dnsapi.dll",
 )
 # Installed by the GPU driver into System32 (never redistributable by us): the CUDA driver API, the NVIDIA management library,
 # and the AMD / Intel user-mode driver pieces the driver package owns.
@@ -64,14 +64,13 @@ def _match(name: str, patterns: tuple[str, ...], fold: bool) -> bool:
 
 
 # ---- readers ---------------------------------------------------------------------------------------------------------------
-def pe_imports(path: Path) -> list[str]:
-    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
-    data = path.read_bytes()
+def pe_imports_bytes(data: bytes, label: str = "PE") -> list[str]:
+    """DLL names in a PE image (import table) plus delay-load imports (loaded at first call)."""
     if data[:2] != b"MZ":
-        raise ValueError(f"{path}: not a PE file")
+        raise ValueError(f"{label}: not a PE file")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0":
-        raise ValueError(f"{path}: bad PE header")
+        raise ValueError(f"{label}: bad PE header")
     nsec, = struct.unpack_from("<H", data, pe + 6)
     opt_size, = struct.unpack_from("<H", data, pe + 20)
     opt = pe + 24
@@ -87,7 +86,7 @@ def pe_imports(path: Path) -> list[str]:
         for va, size, raw in sections:
             if va <= rva < va + size:
                 return raw + rva - va
-        raise ValueError(f"{path}: RVA {rva:#x} is outside every section")
+        raise ValueError(f"{label}: RVA {rva:#x} is outside every section")
 
     def cstr(o: int) -> str:
         end = data.index(b"\0", o)
@@ -113,6 +112,18 @@ def pe_imports(path: Path) -> list[str]:
             names.append(cstr(off(name_rva)))
             o += 32
     return names
+
+
+def pe_imports(path: Path) -> list[str]:
+    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
+    return pe_imports_bytes(path.read_bytes(), str(path))
+
+
+def imports_bytes(data: bytes) -> tuple[str, list[str]]:
+    """(kind, names) for an in-memory file, or ("", []) when it is not an executable format this module reads."""
+    if data[:2] == b"MZ":
+        return "pe", pe_imports_bytes(data)
+    return "", []
 
 
 def elf_needed(path: Path) -> list[str]:
