@@ -295,5 +295,72 @@ class OfflineEntry(unittest.TestCase):
             self.assertEqual(code, 5)
 
 
+def _manifest(folder: Path, variant: str, floor: str, archs: list[str]) -> dict:
+    folder.mkdir(parents=True, exist_ok=True)
+    meta = {"variant": variant, "min_driver": {"nvidia": floor}, "archs": archs, "version": "0.1.55", "backend": "cuda", "platform": "windows-x86_64"}
+    (folder / "engine-component.json").write_text(__import__("json").dumps(meta), encoding="utf-8")
+    (folder / "strata.exe").write_bytes(fake_pe(["KERNEL32.dll"]))
+    return meta
+
+
+class CudaChoice(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.cuda12 = self.root / "components" / "engine" / "0.1.55-windows-x86_64-cuda-cuda12"
+        self.cuda13 = self.root / "components" / "engine" / "0.1.55-windows-x86_64-cuda-cuda13"
+        _manifest(self.cuda12, "cuda12", "576.02", ["sm_60", "sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_89", "compute_89"])
+        _manifest(self.cuda13, "cuda13", "580.65", ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"])
+        self.packages = wo.cuda_packages(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_cuda13_is_preferred_only_when_the_driver_and_gpu_allow_it(self):
+        chosen, note = wo.choose_cuda(self.packages, archs=["sm_89"], driver="581.80", manual=None)
+        self.assertEqual(chosen["variant"], "cuda13")
+        self.assertIn("cuda12", note)
+        self.assertNotIn(str(self.cuda12), note)
+
+    def test_an_older_driver_keeps_cuda12_even_if_a_newer_toolkit_could_be_present(self):
+        chosen, note = wo.choose_cuda(self.packages, archs=["sm_86"], driver="576.02", manual=None)
+        self.assertEqual(chosen["variant"], "cuda12", note)
+        refused, why = wo.choose_cuda(self.packages, archs=["sm_86"], driver="576.02", manual="13")
+        self.assertIsNone(refused)
+        self.assertIn("580.65", why)
+        self.assertIn("toolkit", why)
+
+    def test_pascal_does_not_get_cuda13_and_blackwell_prefers_cuda13(self):
+        pascal, _ = wo.choose_cuda(self.packages, archs=["sm_61"], driver="595.00", manual=None)
+        self.assertEqual(pascal["variant"], "cuda12")
+        blackwell, _ = wo.choose_cuda(self.packages, archs=["sm_120"], driver="580.65", manual=None)
+        self.assertEqual(blackwell["variant"], "cuda13")
+
+    def test_the_chosen_engine_directory_is_the_only_one_put_on_the_path(self):
+        from strata_control.engine_component import package_lib_dirs
+        _tree(self.root)
+        _manifest(self.cuda12, "cuda12", "576.02", ["sm_60", "sm_86", "sm_89", "compute_89"])
+        _manifest(self.cuda13, "cuda13", "580.65", ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"])
+        report = wo.preflight(self.root, driver=("581.80", None), archs=["sm_89"])
+        self.assertTrue(report.ok, [issue.line() for issue in report.issues])
+        self.assertEqual(report.choice["variant"], "cuda13")
+        dirs = package_lib_dirs(report.choice["folder"])
+        self.assertIn(str(self.cuda13), dirs)
+        self.assertNotIn(str(self.cuda12), dirs)
+        started = wo.begin(self.root, check_driver=True, driver_info=("581.80", None), archs=["sm_89"],
+                           spawn=lambda *args, **kwargs: mock.Mock())
+        self.assertIn(str(self.cuda13), started.env["PATH"])
+        self.assertNotIn(str(self.cuda12), started.env["PATH"])
+        self.assertEqual(started.env["STRATA_OFFLINE_CUDA"], "13")
+
+    def test_a_missing_driver_is_an_error_and_does_not_assume_cuda13(self):
+        report = wo.preflight(self.root, driver=(None, "nvidia-smi was not found"))
+        self.assertFalse(report.ok)
+        text = "\n".join(issue.line() for issue in report.issues)
+        self.assertIn("580.65", text)
+        self.assertIn("576.02", text)
+        self.assertIn("toolkit", text)
+
+
 if __name__ == "__main__":
     unittest.main()

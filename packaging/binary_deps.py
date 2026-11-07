@@ -29,7 +29,7 @@ WINDOWS_OS = (
     "winmm.dll", "imm32.dll", "comctl32.dll", "comdlg32.dll", "dbghelp.dll", "psapi.dll", "pdh.dll", "powrprof.dll",
     "userenv.dll", "netapi32.dll", "wininet.dll", "winhttp.dll", "dxgi.dll", "d3d11.dll", "d3d12.dll", "dwmapi.dll",
     "dxcore.dll", "wtsapi32.dll", "ncrypt.dll", "normaliz.dll", "api-ms-win-*.dll", "ext-ms-win-*.dll", "hid.dll",
-    "opengl32.dll", "glu32.dll", "wldap32.dll", "authz.dll", "msi.dll", "propsys.dll", "uxtheme.dll", "dnsapi.dll",
+    "opengl32.dll", "glu32.dll", "wldap32.dll", "authz.dll", "msi.dll", "cabinet.dll", "propsys.dll", "uxtheme.dll", "dnsapi.dll",
 )
 # Installed by the GPU driver into System32 (never redistributable by us): the CUDA driver API, the NVIDIA management library,
 # and the AMD / Intel user-mode driver pieces the driver package owns.

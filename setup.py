@@ -978,6 +978,10 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     return r
 
 
+def offline_entry() -> bool:
+    return os.environ.get("STRATA_OFFLINE_ENTRY") == "1"
+
+
 def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
     """The ~5 GB of MTP tensors (tools/mtp_fetch.py).  A timeout or a dropped connection stops one run, not the install (#3214 #3193):
     it is run again, and each run continues where the last one stopped.  The progress lines it prints are what the app shows."""
@@ -8990,10 +8994,16 @@ def mac_control_setup(a) -> int:
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         elif not (mmproj.exists() and done(mmproj)):
-            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam["mmproj"] in ISTA_FILES:
+            if offline_entry():
+                warn(f"missing local file {mmproj} (picture encoder). Pictures stay off. Nothing was downloaded.")
+                vision = "none"
+                mmproj = None
+            else:
+                download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+        if mmproj is not None and fam["mmproj"] in ISTA_FILES:
             verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
-        ok(f"vision encoder: {mmproj}")
+        if mmproj is not None:
+            ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
@@ -9011,6 +9021,9 @@ def mac_control_setup(a) -> int:
         ok(f"the experts stream from the SSD; the MTP draft layer stays on, with --spec {MF.STREAM_SPEC}")
     if use_mtp and a.mtp == "off" and not (mtp / "mtp-q2_0.gguf").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
+        use_mtp = False
+    if use_mtp and not (mtp / "mtp-q2_0.gguf").exists() and offline_entry():
+        ok("the draft layer is not among the local files, so it stays off. Nothing was downloaded.")
         use_mtp = False
     if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
         say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of MTP tensors are downloaded.")
@@ -10028,12 +10041,17 @@ def main() -> int:
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
-        else:
+        elif not mmproj.exists() and offline_entry():
+            warn(f"missing local file {mmproj} (picture encoder). Pictures stay off. Nothing was downloaded.")
+            vision = "none"
+            mmproj = None
+        elif not mmproj.exists():
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too
+        if mmproj is not None and fam.get("mmproj_sha256"):   # the NVFP4 family pins it by size and SHA-256 too
             verify_sha256(mmproj, *fam["mmproj_sha256"])
-        ok(f"vision encoder: {mmproj}")
-        if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
+        if mmproj is not None:
+            ok(f"vision encoder: {mmproj}")
+        if mmproj is not None and vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
                 "cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md")
 
@@ -10077,11 +10095,15 @@ def main() -> int:
         (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
     corrupt = (rt / "experts.bin").exists() and not prepared and mtp_corrupt(mtp, env)
-    if corrupt:
+    if corrupt and not offline_entry():
         warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
              "fetching them again and rebuilding the draft layer")
+    elif corrupt:
+        warn("the local draft layer is not usable, so it stays off. Nothing was downloaded.")
     if a.mtp == "off" and not (rt / "experts.bin").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
+    elif offline_entry() and (corrupt or not (rt / "experts.bin").exists()):
+        ok("the draft layer is not among the local files, so it stays off. Nothing was downloaded.")
     elif corrupt or not (rt / "experts.bin").exists():
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")

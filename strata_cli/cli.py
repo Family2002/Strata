@@ -68,8 +68,9 @@ def parser() -> argparse.ArgumentParser:
 
     offline = sp.add_parser("offline", help="start the local page from a prepared Windows folder; downloads nothing and installs nothing")
     offline.add_argument("--root", required=True, help="the prepared folder (node, host, control, components, third_party)")
-    offline.add_argument("--model", required=True, help="a local .gguf file or a folder of them")
+    offline.add_argument("--model", default=None, help="optional local .gguf file or folder; the page can choose it later")
     offline.add_argument("--port", type=int, default=8791)
+    offline.add_argument("--cuda", choices=("12", "13"), default=None, help="use this CUDA engine only when its manifest allows the GPU and driver")
     offline.add_argument("--plan", action="store_true", help="check the folder and print the address; do not start")
 
     profile = sp.add_parser("profile", help="edit saved serving overrides outside setup's run config")
@@ -2158,7 +2159,10 @@ def _run(a: argparse.Namespace) -> int:
             return tune_commands.presets_command(a)
         if a.command == "offline":
             from strata_control.windows_offline import main as offline_main
-            return offline_main(["--root", a.root, "--model", a.model, "--port", str(a.port), *(["--plan"] if a.plan else [])])
+            argv = ["--root", a.root, "--port", str(a.port), *(["--plan"] if a.plan else []), *(["--cuda", a.cuda] if a.cuda else [])]
+            if a.model:
+                argv[2:2] = ["--model", a.model]
+            return offline_main(argv)
         if a.command in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd
             return launch_cmd.run_launch(a) if a.command == "launch" else launch_cmd.run_connect(a)

@@ -5,31 +5,32 @@ use the WebView2 window. The page is the same App Host, opened in a browser that
 
 `strata launch`, the desktop app and `strata update` are unchanged. This command is opt-in.
 
+## 安装包
+
+`packaging/build_windows_offline_installer.py` builds one NSIS installer that contains both
+upstream engine packages from Niko1221/Strata v0.2.9 (engine 0.1.55):
+
+- `0.1.55-windows-x86_64-cuda-cuda12`, manifest driver floor NVIDIA 576.02, code sm_60 through sm_89 plus compute_89 PTX
+- `0.1.55-windows-x86_64-cuda-cuda13`, manifest driver floor NVIDIA 580.65, code sm_75, sm_86, sm_89, sm_120 plus compute_120 PTX
+
+Each package stays in its own directory. At start, only the chosen directory is put on PATH.
+CUDA 13 is used when the GPU and the driver both meet its manifest. An installed CUDA toolkit is not read.
+`Start-Strata.cmd --cuda 12` or `--cuda 13` forces one package; a choice the manifest rejects exits instead of switching.
+
+The built file is `Strata-0.2.9-offline-windows-x64-cuda12-cuda13-setup.exe` (1672831334 bytes,
+SHA-256 2c4ec5321ac73a56857a145607a57451328575a42823a119535fed957518ca00). It was produced on Linux
+with makensis, then unpacked with 7-Zip and checked. It was not run on Windows and no GPU inference was run.
+
 ## 怎么用
 
-准备文件夹的工作发生在有这些文件的机器上。要运行的那台 Windows 电脑只执行最后一条命令。
+安装包会自己带上 Node、Control 里的 Python、两套引擎和页面。要运行的那台 Windows 电脑只安装并打开它。
 
-1. 准备目录里要有这些本地文件（少一个就退出，并写出缺的路径；不会下载，也不会打开安装程序）：
-   - `node/node.exe`，以及它的导入表里不属于 Windows 和显卡驱动的 DLL（官方 Node 的 Windows 压缩包里，这包含 `vcruntime140.dll`。用 `python packaging/node_runtime.py --zip <已有的 node zip> --dest <目录>/node` 按导入表解出，不要只复制 `node.exe`）
-   - `host/server/index.mjs` 和已经构建好的 `host/dist/index.html`
-   - `control/python/python.exe`、它导入的 DLL、`control/strata.py`、`control/strata_control/`
-   - `components/engine/<包>/engine-component.json` 和该包里的 `strata.exe` 及其 DLL（Qwen）。DeepSeek-V4.1 还要 `components/engine-dsv41/<包>/strata-dsv41.exe` 及其 DLL
-   - `third_party/llama.cpp/gguf-py/` 和 `third_party/llama.cpp/ggml/CMakeLists.txt`（这是准备工具用的本地源码树标记。离线入口不会运行 cmake、git 或编译器）
-   - 已经在本机的 `.gguf`。能本地识别的架构只有 `qwen4exp`（Qwen3.8-Flash-Next）和 `deepseek41`（DeepSeek-V4.1-Flash）。其他架构、不是 GGUF 的文件、mmproj 和辅助表会被拒绝
-2. 那台 Windows 电脑上还要有：Windows 10 或 11 的 x64，以及这个引擎包对应的显卡驱动。程序不安装它们。不需要另外安装 Python、Node、Visual C++ 运行库、WebView2 或 CUDA Toolkit；那些 DLL 必须已经在上面的目录里，否则依赖闭包检查失败。
-3. 检查并打印地址，不启动：
+1. 安装 `Strata-0.2.9-offline-windows-x64-cuda12-cuda13-setup.exe`。它不访问网络，也不安装别的运行库。
+2. 运行 `%LOCALAPPDATA%\StrataOffline\Start-Strata.cmd`。
+3. 用已经装在这台电脑上的浏览器打开它打印的 `http://127.0.0.1:8791/`。
+4. 在页面里选择服务器上已经下好的 GGUF。本包装进的准备工具只处理 `qwen4exp`。没有本地草稿层或图片编码器时，这两项保持关闭，不会下载。
 
-```text
-strata offline --root D:\StrataOffline --model D:\模型\qwen.gguf --plan
-```
-
-4. 启动本地页面（只监听 127.0.0.1）：
-
-```text
-strata offline --root D:\StrataOffline --model D:\模型\qwen.gguf
-```
-
-用这台电脑上已经有的浏览器打开打印出来的地址。这条命令不安装浏览器。
+这台电脑仍要有 Windows 10 或 11 x64，以及清单所写的 NVIDIA 驱动。程序不安装驱动。
 
 ## What a missing file does
 
