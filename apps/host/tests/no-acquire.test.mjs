@@ -17,12 +17,14 @@ const spy = pathToFileURL(fileURLToPath(new URL('./helpers/acquire-spy.mjs', imp
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function freePort() { const s = createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
 
-test('the host-side switch: STRATA_NO_ACQUIRE or the packaged app forbids acquiring, nothing else does', () => {
+test('the host-side switch: STRATA_NO_ACQUIRE, the packaged app, or the offline entry forbids acquiring', () => {
   assert.equal(forbidden({}), false);
   for (const v of ['1', 'true', 'YES', 'on']) assert.equal(forbidden({ STRATA_NO_ACQUIRE: v }), true, v);
   for (const v of ['0', 'false', '', 'no']) assert.equal(forbidden({ STRATA_NO_ACQUIRE: v }), false, v);
   assert.equal(forbidden({ STRATA_PACKAGED: '1' }), true);
+  assert.equal(forbidden({ STRATA_OFFLINE_ENTRY: '1' }), true);
   assert.throws(() => requireAcquisition('the llama.cpp engine', undefined, { STRATA_NO_ACQUIRE: '1' }), AcquisitionRefused);
+  assert.throws(() => requireAcquisition('node.exe', undefined, { STRATA_OFFLINE_ENTRY: '1' }), err => err instanceof AcquisitionRefused && /Nothing was downloaded/.test(err.message) && !/Install it from/.test(err.message));
   assert.doesNotThrow(() => requireAcquisition('x', undefined, {}));
 });
 

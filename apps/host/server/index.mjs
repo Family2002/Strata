@@ -63,6 +63,7 @@ import { prepareOversized } from './oversize.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates, engineFirstRun } from './updates.mjs';
+import { isOfflineEntry, localFirstRun, localUpdateReport } from './offline-entry.mjs';
 import { plainNoModel } from './no-model-text.mjs';
 import { createAppUi } from './app-ui.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -1349,6 +1350,7 @@ async function api(req, res, path, method, url) {
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
   if (path === '/api/engine/first-run' && method === 'GET') {
+    if (isOfflineEntry()) return json(res, 200, localFirstRun(componentsDirectory()));
     if (!control?.updateCheck) return json(res, 200, { status: 'unavailable', gpus: [] });
     const info = await engineFirstRun({ control, gpus: hardware.cachedHardware()?.gpus ?? [] });
     try { let at = componentsDirectory(); while (at && !existsSync(at) && dirname(at) !== at) at = dirname(at); const f = statfsSync(at); info.freeBytes = Number(f.bavail) * Number(f.bsize); } catch { /* unknown: no warning */ }
@@ -1369,6 +1371,7 @@ async function api(req, res, path, method, url) {
     await pipeline(req, createWriteStream(target, { mode: 0o600 }));
     return json(res, 202, native.operation('install-engine-file', { path: target }));
   }
+  if (path === '/api/updates/check' && method === 'GET' && isOfflineEntry()) return json(res, 200, localUpdateReport());
   if (path === '/api/updates/check' && method === 'GET' && control?.updateCheck) return json(res, 200, await checkComponentUpdates({ control, appUpdater, appVersion: process.env.STRATA_APP_VERSION || null }));
   if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:appVersionToShow(setupState().app.version,native.state().version), engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
 

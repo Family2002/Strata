@@ -94,7 +94,12 @@ fi
 
 mkdir -p "$DEST"
 case "$ARCHIVE" in
-  *.zip) unzip -q -j "$WORK/$ARCHIVE" "node-v$NODE_VERSION-win-x64/node.exe" -d "$DEST" ;;
+  *.zip)
+    # node.exe imports the VC++ DLLs that sit beside it in the official zip. Extract that closure;
+    # copying node.exe alone is how a PC without the redistributable fails at startup.
+    REPO="$(cd "$HERE/../../.." && pwd)"
+    python3 "$REPO/packaging/node_runtime.py" --zip "$WORK/$ARCHIVE" --dest "$DEST"
+    ;;
   *)     tar xzf "$WORK/$ARCHIVE" -C "$WORK"
          cp "$WORK/node-v$NODE_VERSION-$TARGET/bin/node" "$DEST/node" ;;
 esac

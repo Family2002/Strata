@@ -226,6 +226,8 @@ def run(a) -> int:
             else:
                 print(out.get("note") or _line("Engine", out))
             return 0
+        if os.environ.get("STRATA_OFFLINE_ENTRY", "").strip() == "1":
+            return fail("The offline entry does not contact the update feed. Nothing was downloaded.", 5)
         acquisition.require("the update", "`strata update` from a terminal")
         trusted = signing.load_trusted_keys()
         ctx.trusted = trusted

@@ -478,6 +478,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--only")
     a = ap.parse_args()
+    if a.cmd != "verify" and os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        sys.exit(f"missing local directory {a.out}. The offline entry does not download the draft layer. Nothing was fetched.")
     if a.cmd == "verify":                           # offline: the hashes are the pinned revision's
         bad = verify(a.out)
         for name in bad:

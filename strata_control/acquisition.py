@@ -38,6 +38,9 @@ class AcquisitionRefused(RuntimeError):
     def __init__(self, what: str, command: str | None = None):
         self.what = what
         self.command = command or explicit_commands()
+        if os.environ.get("STRATA_OFFLINE_ENTRY", "").strip() == "1":
+            super().__init__(f"{what} is missing from the offline folder. Nothing was downloaded and no installer was started.")
+            return
         super().__init__(
             f"{what} is missing or out of date. Starting and serving never install or download "
             f"anything. Run: {self.command}")

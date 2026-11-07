@@ -11,6 +11,7 @@
  */
 
 import { plainUpdateError, PHASE_TEXT } from './update-messages.mjs';
+import { isOfflineEntry } from './offline-entry.mjs';
 
 const GB = 1e9;
 const round = (value, digits = 2) => Math.round(value * 10 ** digits) / 10 ** digits;
@@ -23,6 +24,13 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
   const set = patch => { Object.assign(part, patch); onChange({ ...part }); };
 
   async function run() {
+    if (isOfflineEntry()) {
+      let usable = false;
+      try { usable = !!(await control?.engine?.())?.usable; } catch { /* no local engine */ }
+      if (usable) { set({ state: 'skipped', message: 'The engine in the offline folder is installed. Nothing was downloaded.' }); return { ...part }; }
+      set({ state: 'failed', message: 'Missing local engine in the offline folder. Nothing was downloaded.', error: 'Missing local engine in the offline folder. Nothing was downloaded.' });
+      return { ...part };
+    }
     if (!control || typeof control.update !== 'function') { set({ state: 'skipped', message: 'This build has no component updater.' }); return { ...part }; }
     try {
       set({ state: 'checking', message: 'Checking the engine for this PC…' });

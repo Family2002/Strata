@@ -475,6 +475,8 @@ def _free_space_check(root: Path, need: int, ctx: "Context | None" = None, sha25
 
 
 def _download(ctx: Context, state_name: str, url_ref: str, size: int, sha256: str, label: str, feed: feedmod.Feed) -> Path:
+    if os.environ.get("STRATA_OFFLINE_ENTRY", "").strip() == "1":
+        raise UpdateError(f"missing local file for {label}. The offline entry does not download it.", 5)
     work = updates_dir(ctx.components) / "partial"
     partial = work / f"{sha256[:16]}.part"
     start = time.monotonic()

@@ -64,14 +64,13 @@ def _match(name: str, patterns: tuple[str, ...], fold: bool) -> bool:
 
 
 # ---- readers ---------------------------------------------------------------------------------------------------------------
-def pe_imports(path: Path) -> list[str]:
-    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
-    data = path.read_bytes()
+def pe_imports_bytes(data: bytes, label: str = "PE") -> list[str]:
+    """DLL names in a PE image (import table) plus delay-load imports (loaded at first call)."""
     if data[:2] != b"MZ":
-        raise ValueError(f"{path}: not a PE file")
+        raise ValueError(f"{label}: not a PE file")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0":
-        raise ValueError(f"{path}: bad PE header")
+        raise ValueError(f"{label}: bad PE header")
     nsec, = struct.unpack_from("<H", data, pe + 6)
     opt_size, = struct.unpack_from("<H", data, pe + 20)
     opt = pe + 24
@@ -87,7 +86,7 @@ def pe_imports(path: Path) -> list[str]:
         for va, size, raw in sections:
             if va <= rva < va + size:
                 return raw + rva - va
-        raise ValueError(f"{path}: RVA {rva:#x} is outside every section")
+        raise ValueError(f"{label}: RVA {rva:#x} is outside every section")
 
     def cstr(o: int) -> str:
         end = data.index(b"\0", o)
@@ -113,6 +112,18 @@ def pe_imports(path: Path) -> list[str]:
             names.append(cstr(off(name_rva)))
             o += 32
     return names
+
+
+def pe_imports(path: Path) -> list[str]:
+    """DLL names a PE file imports at load time (import table) plus delay-load imports (loaded at first call)."""
+    return pe_imports_bytes(path.read_bytes(), str(path))
+
+
+def imports_bytes(data: bytes) -> tuple[str, list[str]]:
+    """(kind, names) for an in-memory file, or ("", []) when it is not an executable format this module reads."""
+    if data[:2] == b"MZ":
+        return "pe", pe_imports_bytes(data)
+    return "", []
 
 
 def elf_needed(path: Path) -> list[str]:
