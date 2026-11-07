@@ -103,12 +103,24 @@ class OfflineStop(Exception):
 
 
 def _deps():
-    root = Path(__file__).resolve().parents[1]
-    packaging = str(root / "packaging")
-    if packaging not in sys.path:
-        sys.path.insert(0, packaging)
-    import binary_deps
-    return binary_deps
+    """The PE closure checker. It lives in packaging/ in a source checkout.
+
+    The offline installer copies that one file to control/packaging/binary_deps.py. This file is
+    then control/strata_control/windows_offline.py, so the parent of strata_control is control, and
+    control/packaging is the same relative place as <repo>/packaging in a checkout.
+    """
+    here = Path(__file__).resolve()
+    candidates = [here.parents[1] / "packaging", here.parent]
+    for folder in candidates:
+        if (folder / "binary_deps.py").is_file():
+            folder_s = str(folder)
+            if folder_s not in sys.path:
+                sys.path.insert(0, folder_s)
+            import binary_deps
+            return binary_deps
+    raise ModuleNotFoundError(
+        "binary_deps.py is not in the offline install (expected control/packaging/binary_deps.py). "
+        "Nothing was downloaded.")
 
 
 def _reader():

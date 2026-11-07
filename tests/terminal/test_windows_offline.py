@@ -6,7 +6,9 @@ folder, including paths with spaces and Chinese characters, and refuse any socke
 from __future__ import annotations
 
 import os
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -223,10 +225,49 @@ class OfflineEntry(unittest.TestCase):
             self.assertIn("vcruntime140.dll", str(caught.exception).lower())
             self.assertFalse(empty.exists())
 
+    def test_an_installed_control_layout_can_preflight_without_the_repo(self):
+        """The real failure: Start-Strata.cmd loads control/strata_control/windows_offline.py, whose
+        parent is control, not the source checkout. binary_deps must be at control/packaging."""
+        with tempfile.TemporaryDirectory() as tmp:
+            install = Path(tmp) / "StrataOffline"
+            control = install / "control"
+            control.mkdir(parents=True)
+            shutil.copytree(ROOT / "strata_control", control / "strata_control",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            packaged = control / "packaging"
+            packaged.mkdir()
+            shutil.copy2(ROOT / "packaging" / "binary_deps.py", packaged / "binary_deps.py")
+            (control / "tools").mkdir()
+            shutil.copy2(ROOT / "tools" / "gguf_reader.py", control / "tools" / "gguf_reader.py")
+            model = install / "模型" / "q.gguf"
+            model.parent.mkdir()
+            wo.write_header(model, "qwen4exp")
+            env = os.environ.copy()
+            env.pop("PYTHONPATH", None)
+            script = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                "install = Path(sys.argv[1])\n"
+                "repo = Path(sys.argv[2]).resolve()\n"
+                "sys.path = [p for p in sys.path if p and Path(p).resolve() != repo and repo not in Path(p).resolve().parents]\n"
+                "sys.path.insert(0, str(install / 'control'))\n"
+                "import strata_control.windows_offline as wo\n"
+                "report = wo.preflight(install, Path(sys.argv[3]))\n"
+                "text = '\\n'.join(issue.line() for issue in report.issues)\n"
+                "if 'binary_deps' in text or 'No module named' in text:\n"
+                "    raise SystemExit(text)\n"
+                "print('preflight-import-ok')\n"
+            )
+            done = subprocess.run([sys.executable, "-c", script, str(install), str(ROOT), str(model)],
+                                  cwd=tmp, env=env, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
+            self.assertIn("preflight-import-ok", done.stdout)
+
     def test_the_installer_script_overlays_the_engine_server(self):
         text = (ROOT / "packaging" / "build_windows_offline_installer.py").read_text(encoding="utf-8")
         self.assertIn('copy_tree(ROOT / "serve", payload / "control" / "serve")', text)
-        self.assertIn('Path("/opt/cursor/artifacts/offline-v0.2.11")', text)
+        self.assertIn('Path("/opt/cursor/artifacts/offline-v0.2.11-r2")', text)
+        self.assertIn('payload / "control" / "packaging"', text)
         self.assertIn("strata-control-0.1.57-windows-x86_64.zip", text)
         self.assertIn("0.1.57-windows-x86_64-cuda-cuda12", text)
 

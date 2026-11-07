@@ -23,9 +23,9 @@ import node_runtime  # noqa: E402
 from strata_control.windows_offline import preflight  # noqa: E402
 
 CACHE = Path("/tmp/strata-offline-cache-0211")
-STAGE = Path("/tmp/strata-offline-stage-0211")
-OUT_DIR = Path("/opt/cursor/artifacts/offline-v0.2.11")
-OUT_NAME = "Strata-0.2.11-offline-r1-windows-x64-cuda12-cuda13-setup.exe"
+STAGE = Path("/tmp/strata-offline-stage-0211-r2")
+OUT_DIR = Path("/opt/cursor/artifacts/offline-v0.2.11-r2")
+OUT_NAME = "Strata-0.2.11-offline-r2-windows-x64-cuda12-cuda13-setup.exe"
 
 # Upstream tag v0.2.11 (annotated tag 4a416016) points at commit c3b3f5035.
 # That tag's message says app/Terminal 0.2.11 and Control/engines 0.1.57.
@@ -107,6 +107,11 @@ def main() -> int:
     for name in ("strata_cli", "strata_control"):
         copy_tree(ROOT / name, payload / "control" / name)
     shutil.copy2(ROOT / "tools" / "mtp_fetch.py", payload / "control" / "tools" / "mtp_fetch.py")
+    # windows_offline.py imports binary_deps from control/packaging when it is installed
+    # (strata_control's parent is control). The source checkout has it at <repo>/packaging.
+    packaged_deps = payload / "control" / "packaging"
+    packaged_deps.mkdir(parents=True)
+    shutil.copy2(ROOT / "packaging" / "binary_deps.py", packaged_deps / "binary_deps.py")
     # The engine process is control's `python -m serve.server`. The upstream control zip does not
     # have this branch's offline checks, so the checkout's serve tree replaces it.
     copy_tree(ROOT / "serve", payload / "control" / "serve")
@@ -153,6 +158,8 @@ def main() -> int:
         )
     """).lstrip(), encoding="utf-8")
 
+    if not (payload / "control" / "packaging" / "binary_deps.py").is_file():
+        raise SystemExit("staged install is missing control/packaging/binary_deps.py")
     report = preflight(payload)
     if not report.ok:
         for issue in report.issues:
@@ -189,6 +196,8 @@ def main() -> int:
         电脑里装了 CUDA Toolkit 不会被当成驱动已经达标，它的目录也不会留在程序的 PATH 里。
         手动指定：Start-Strata.cmd --cuda 13 或 --cuda 12。指定的那套若不符合清单，程序退出并说明原因，不会偷偷改用另一套。
 
+        这是 0.2.11 的 r2。r1 第一次启动会报 No module named binary_deps。r2 把这个检查模块放进 control\\packaging。
+        再安装到同一个 %LOCALAPPDATA%\\StrataOffline 会盖过旧文件，不必先卸载。
         没有网也能安装和第一次打开。不安装 WebView2、Python、Node、VC++ 或 CUDA Toolkit。
         用这台电脑上已经有的浏览器打开窗口里打印的 http://127.0.0.1:8791/ 。
         模型权重不在这个包里。在页面里选择已经下好的 GGUF，或 Start-Strata.cmd --model 指向那个文件或文件夹。
@@ -211,7 +220,7 @@ def main() -> int:
 
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
     (payload / "OFFLINE_BUILD.txt").write_text(
-        "offline-v0.2.11-r1\n"
+        "offline-v0.2.11-r2\n"
         f"commit {commit}\n"
         "upstream tag v0.2.11 commit c3b3f5035506f3e966f1b4b7b188aeaabae92f1d\n"
         "app 0.2.11\n"
