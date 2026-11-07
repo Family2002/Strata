@@ -102,6 +102,9 @@ def main() -> int:
     for name in ("strata_cli", "strata_control"):
         copy_tree(ROOT / name, payload / "control" / name)
     shutil.copy2(ROOT / "tools" / "mtp_fetch.py", payload / "control" / "tools" / "mtp_fetch.py")
+    # The engine process is control's `python -m serve.server`. The upstream control zip does not
+    # have this branch's offline checks, so the checkout's serve tree replaces it.
+    copy_tree(ROOT / "serve", payload / "control" / "serve")
 
     for archive_name, folder_name in ENGINE_DIRS.items():
         dest = payload / "components" / "engine" / folder_name
@@ -224,6 +227,8 @@ def main() -> int:
     # The sync folder rejects one file around 128MB. Keep the installer on local disk and write
     # 24MiB parts under offline-r2/. Do not touch the previous package in the artifacts root.
     part_prefix = OUT_DIR / (outfile.name + ".part-")
+    for stale in OUT_DIR.glob(outfile.name + ".part-*"):
+        stale.unlink()
     subprocess.run(["split", "-b", "24M", "-d", "-a", "2", str(outfile), str(part_prefix)], check=True)
     parts = sorted(OUT_DIR.glob(outfile.name + ".part-*"))
     lines = [f"{digest}  {outfile.name}", f"size {outfile.stat().st_size}", f"commit {commit}", ""]

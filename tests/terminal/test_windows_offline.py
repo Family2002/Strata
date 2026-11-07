@@ -223,6 +223,11 @@ class OfflineEntry(unittest.TestCase):
             self.assertIn("vcruntime140.dll", str(caught.exception).lower())
             self.assertFalse(empty.exists())
 
+    def test_the_installer_script_overlays_the_engine_server(self):
+        text = (ROOT / "packaging" / "build_windows_offline_installer.py").read_text(encoding="utf-8")
+        self.assertIn('copy_tree(ROOT / "serve", payload / "control" / "serve")', text)
+        self.assertIn('Path("/opt/cursor/artifacts/offline-r2")', text)
+
     def test_fetch_scripts_use_the_closure_helper(self):
         sh = (ROOT / "apps/desktop/scripts/fetch-node.sh").read_text(encoding="utf-8")
         ps1 = (ROOT / "apps/desktop/scripts/fetch-node.ps1").read_text(encoding="utf-8")
