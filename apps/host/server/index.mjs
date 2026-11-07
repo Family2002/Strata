@@ -66,6 +66,7 @@ import { prepareOversized } from './oversize.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates, engineFirstRun } from './updates.mjs';
+import { isOfflineEntry, localFirstRun, localUpdateReport } from './offline-entry.mjs';
 import { plainNoModel } from './no-model-text.mjs';
 import { createAppUi } from './app-ui.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -1399,6 +1400,7 @@ async function api(req, res, path, method, url) {
 
   if (path === '/api/setup' && method === 'GET') return json(res, 200, setupState());
   if (path === '/api/engine/first-run' && method === 'GET') {
+    if (isOfflineEntry()) return json(res, 200, localFirstRun(componentsDirectory()));
     if (!control?.updateCheck) return json(res, 200, { status: 'unavailable', gpus: [] });
     const info = await engineFirstRun({ control, gpus: hardware.cachedHardware()?.gpus ?? [] });
     try { let at = componentsDirectory(); while (at && !existsSync(at) && dirname(at) !== at) at = dirname(at); const f = statfsSync(at); info.freeBytes = Number(f.bavail) * Number(f.bsize); } catch { /* unknown: no warning */ }
@@ -1428,6 +1430,7 @@ async function api(req, res, path, method, url) {
     await pipeline(req, createWriteStream(target, { mode: 0o600 }));
     return json(res, 202, native.operation('install-engine-file', { path: target }));
   }
+  if (path === '/api/updates/check' && method === 'GET' && isOfflineEntry()) return json(res, 200, localUpdateReport());
   if (path === '/api/updates/check' && method === 'GET' && control?.updateCheck) return json(res, 200, await checkComponentUpdates({ control, appUpdater, appVersion: process.env.STRATA_APP_VERSION || null }));
   if (path === '/api/updates/check' && method === 'GET') return json(res, 200, await checkUpdates({ appVersion:appVersionToShow(setupState().app.version,native.state().version), engineVersion:native.state().available?(native.state().installed?.engine?.version??null):(await engine.config()).engine.version }));
 
@@ -1642,7 +1645,12 @@ async function api(req, res, path, method, url) {
   // --- serving ------------------------------------------------------------
   if (path === '/api/serving/tunnel' && method === 'GET') return json(res, 200, await cloudflare.inspect());
   if (path === '/api/serving/tunnel' && method === 'POST') {
-    try { const body = await readBody(req); if (body.action === 'stop') await cloudflare.stop(); else if (body.action === 'start') await cloudflare.start(body); else if (body.action === 'prepare') await cloudflare.prepare(); else throw new Error('Unknown tunnel action.'); return json(res, 200, serving.state()); }
+    try {
+      const body = await readBody(req);
+      if (isOfflineEntry() && body.action !== 'stop') throw new Error('The offline entry does not open a tunnel. Nothing was contacted.');
+      if (body.action === 'stop') await cloudflare.stop(); else if (body.action === 'start') await cloudflare.start(body); else if (body.action === 'prepare') await cloudflare.prepare(); else throw new Error('Unknown tunnel action.');
+      return json(res, 200, serving.state());
+    }
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/monitor/snapshot' && method === 'POST') {
@@ -1650,7 +1658,12 @@ async function api(req, res, path, method, url) {
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/serving/share' && method === 'POST') {
-    try { const body = await readBody(req); if (body.enabled === true) await localShare.start(); else await localShare.stop(); return json(res, 200, serving.state()); }
+    try {
+      const body = await readBody(req);
+      if (isOfflineEntry() && body.enabled === true) throw new Error('The offline entry does not share this server on the network. Nothing was contacted.');
+      if (body.enabled === true) await localShare.start(); else await localShare.stop();
+      return json(res, 200, serving.state());
+    }
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/serving' && method === 'GET') return json(res, 200, serving.state());

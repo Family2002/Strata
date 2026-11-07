@@ -1,0 +1,63 @@
+# The Windows offline entry. No installer is built and no model is downloaded.
+# GPU inference is not part of this job.
+name: Windows offline entry
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-offline.yml
+      - strata_control/windows_offline.py
+      - strata_control/acquisition.py
+      - strata_control/updater.py
+      - strata_control/transfer.py
+      - strata_control/drafting_fetch.py
+      - tools/mtp_fetch.py
+      - strata_cli/cli.py
+      - strata_cli/update_cmd.py
+      - strata_cli/launch/runner.py
+      - setup.py
+      - packaging/node_runtime.py
+      - packaging/binary_deps.py
+      - apps/host/server/offline-entry.mjs
+      - apps/host/server/acquisition.mjs
+      - apps/host/server/engine-step.mjs
+      - apps/host/server/index.mjs
+      - apps/host/server/native-control.mjs
+      - apps/host/tests/offline-entry.test.mjs
+      - apps/host/tests/no-acquire.test.mjs
+      - apps/desktop/scripts/fetch-node.sh
+      - apps/desktop/scripts/fetch-node.ps1
+      - tests/terminal/test_windows_offline.py
+      - docs/WINDOWS_OFFLINE.md
+  push:
+    paths:
+      - .github/workflows/windows-offline.yml
+      - strata_control/windows_offline.py
+      - packaging/node_runtime.py
+      - tests/terminal/test_windows_offline.py
+      - apps/host/tests/offline-entry.test.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-entry:
+    name: ${{ matrix.os }} / offline entry tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python offline-entry tests
+        run: python -m unittest tests.terminal.test_windows_offline
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Host offline-entry tests
+        run: node --test apps/host/tests/offline-entry.test.mjs apps/host/tests/no-acquire.test.mjs

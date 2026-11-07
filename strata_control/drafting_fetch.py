@@ -153,6 +153,8 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
             convert_selector(data_dir, progress=report)
         report("The DFlash2 drafter is ready.", 1, 1)
         return drafting.pack_path(data_dir)
+    if os.environ.get("STRATA_OFFLINE_ENTRY", "").strip() == "1":
+        raise DraftingError("The DFlash2 drafter is not in the offline folder. Nothing was downloaded.")
     acquisition.require("the DFlash2 drafter", "strata drafting fetch")
     folder = out.parent
     src = folder / "src"

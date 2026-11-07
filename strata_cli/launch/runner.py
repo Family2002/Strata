@@ -696,7 +696,8 @@ class Runner:
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        env.pop("STRATA_NO_ACQUIRE", None)                  # launch is the explicit step that may download
+        if os.environ.get("STRATA_OFFLINE_ENTRY") != "1":
+            env.pop("STRATA_NO_ACQUIRE", None)              # launch is the explicit step that may download; the offline entry is not
         if self.components_dir:
             env["STRATA_COMPONENTS_DIR"] = self.components_dir
         return env
@@ -739,6 +740,17 @@ class Runner:
 
     # ---- 1. the engine
     def ensure_engine(self) -> None:
+        if os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+            from strata_control import engine_component as ec
+            root = Path(self.components_dir) if self.components_dir else None
+            report = ec.status(root)
+            if report.get("usable"):
+                eng = report["engine"]
+                self.emit("engine", f"Engine {eng['version']} ({eng['backend']}) is installed.", 100)
+                return
+            where = root or "the components folder"
+            raise LaunchError(f"Missing local engine under {where}. The offline entry does not download one.",
+                              "Place the engine package in components/engine and run again. Nothing was downloaded.", 5)
         self.warn_wsl_amd()
         if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
