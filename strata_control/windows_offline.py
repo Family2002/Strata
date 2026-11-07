@@ -393,12 +393,26 @@ def preflight(root: Path, model: Path | None = None, *, port: int = 8791, driver
     python_runtime = root / "control" / "python"
     if python_runtime.is_dir():
         report.issues.extend(closure_issues(python_runtime, bundled_anywhere=True))
-    report.argv, report.env = host_process(root, port)
+    report.argv, report.env = host_process(root, port, model)
     return report
 
 
-def host_process(root: Path, port: int) -> tuple[list[str], dict[str, str]]:
-    """The host command and the environment that keeps it from acquiring anything."""
+def model_directory(model: Path) -> str | None:
+    """The folder the host should prepare. A file path becomes its parent; a missing path is not invented."""
+    path = Path(model)
+    if path.is_file():
+        path = path.parent
+    if not path.is_dir():
+        return None
+    return str(path.resolve())
+
+
+def host_process(root: Path, port: int, model: Path | None = None) -> tuple[list[str], dict[str, str]]:
+    """The host command and the environment that keeps it from acquiring anything.
+
+    A model path is handed to the host as STRATA_OFFLINE_MODEL (the folder). The page's install
+    uses that folder as gguf_dir, so the first preparation does not try to download weights.
+    """
     from strata_control.offline import child_environment
     root = Path(root)
     argv = [str(root / "node" / "node.exe"), str(root / "host" / "server" / "index.mjs"), "--dist", str(root / "host" / "dist")]
@@ -418,6 +432,10 @@ def host_process(root: Path, port: int) -> tuple[list[str], dict[str, str]]:
         "PYTHONNOUSERSITE": "1",
         "PYTHONUTF8": "1",
     })
+    if model is not None:
+        folder = model_directory(model)
+        if folder:
+            env["STRATA_OFFLINE_MODEL"] = folder
     return argv, env
 
 
@@ -498,7 +516,7 @@ def main(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="strata offline", description="Start the local page from a prepared Windows folder. Downloads nothing and installs nothing.")
     ap.add_argument("--root", required=True, help="the prepared folder (node, host, control, components, third_party)")
-    ap.add_argument("--model", default=None, help="optional local .gguf file or folder; the page can choose it later")
+    ap.add_argument("--model", default=None, help="local .gguf file or folder; the host prepares that folder and does not download weights")
     ap.add_argument("--port", type=int, default=8791)
     ap.add_argument("--cuda", choices=("12", "13"), default=None, help="use this CUDA engine only when its manifest allows the GPU and driver")
     ap.add_argument("--plan", action="store_true", help="check the folder and print the address; do not start")

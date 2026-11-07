@@ -946,7 +946,13 @@ def ask(question, choices, default, yes):
 
 def _urlopen(req, timeout=None):
     """Every network request of this file goes through here: starting and serving never reach the network
-    (strata_control/acquisition.py), only an explicit setup, update or install does."""
+    (strata_control/acquisition.py), only an explicit setup, update or install does.
+    The offline entry refuses http(s) here as well as in download(). The install job clears
+    STRATA_NO_ACQUIRE, so acquisition.require alone would let github_reachable and the other direct
+    callers open a socket."""
+    url = getattr(req, "full_url", None) or str(req)
+    if str(url).startswith(("http://", "https://")) and os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        fail(f"the offline entry does not fetch {url}", "Nothing was downloaded.")
     acquisition.require("a download")
     try:
         return urllib.request.urlopen(req, timeout=timeout)

@@ -176,7 +176,8 @@ def main() -> int:
 
         没有网也能安装和第一次打开。不安装 WebView2、Python、Node、VC++ 或 CUDA Toolkit。
         用这台电脑上已经有的浏览器打开窗口里打印的 http://127.0.0.1:8791/ 。
-        模型权重不在这个包里。在页面里选择服务器上已经下好的 GGUF。
+        模型权重不在这个包里。在页面里选择已经下好的 GGUF，或 Start-Strata.cmd --model 指向那个文件或文件夹。
+        --model 交给页面作为本地目录，不会因此下载权重。
         本包能识别的模型架构是 qwen4exp（Qwen3.8-Flash-Next）。DeepSeek 引擎不在这个包里。
         草稿层和图片编码器如果本地没有，就保持关闭，不会下载。
 

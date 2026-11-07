@@ -7,13 +7,21 @@
  * The profile pins `web.searchProvider` to the id registered here, so a second usable backend cannot make the choice ambiguous.
  * Plain ESM, loaded by absolute path like strata-gate.mjs; its only imports are the app's own search modules next to the host.
  */
-import { createDuckDuckGoSearch } from '../../web-search-ddg.mjs';
+import { createDuckDuckGoSearch, SearchUnavailable } from '../../web-search-ddg.mjs';
 import { createExaSearch, createPerplexitySearch } from '../../web-search-keyed.mjs';
 
 export const name = 'strata-web-search';
 export const inject = ['web'];
 
 export function apply(ctx, config = {}) {
+  if (process.env.STRATA_OFFLINE_ENTRY === '1') {
+    ctx.web.registerSearchProvider({
+      id: 'offline',
+      available: () => false,
+      async search() { throw new SearchUnavailable('The offline entry does not search the web. Nothing was contacted.', 'WEB_OFFLINE'); },
+    });
+    return;
+  }
   const keyOf = () => (config.keyEnv ? process.env[config.keyEnv] ?? '' : '');
   // Tests only (the bridge option `searchMock`): the same search code on a pretend web, so nothing leaves the machine.
   const pretend = config.mock === 'offline' ? { fetch: async () => { throw new TypeError('fetch failed'); } } : config.mock === 'limited' ? { fetch: async url => new Response('<html>please verify you are human: captcha</html>', { status: /duckduckgo/.test(String(url)) ? 202 : 429 }) } : null;

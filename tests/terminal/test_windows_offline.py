@@ -153,6 +153,7 @@ class OfflineEntry(unittest.TestCase):
             self.assertEqual(env["HF_HUB_OFFLINE"], "1")
             self.assertEqual(env["PIP_NO_INDEX"], "1")
             self.assertEqual(env["STRATA_BIND"], "127.0.0.1")
+            self.assertEqual(env["STRATA_OFFLINE_MODEL"], str(model.parent.resolve()))
             self.assertEqual(report.url, "http://127.0.0.1:8791/")
             self.assertIn("离线 入口", str(cwd))
             for banned in ("winget", "pip", "git", "cmake"):
@@ -276,6 +277,82 @@ class OfflineEntry(unittest.TestCase):
                     setup.fetch_mtp(Path(tmp) / "mtp", {})
             self.assertIn("does not download", str(download.exception))
 
+    def test_install_job_keeps_the_offline_limit_after_it_clears_acquire(self):
+        """The real install job (tools/strata_mcp.py) is what setup runs under. It drops STRATA_NO_ACQUIRE
+        and keeps the offline flag and the PATH the host was given. setup._urlopen must still refuse https."""
+        import importlib.util
+        import json
+        loaded = importlib.util.spec_from_file_location("strata_mcp_offline_job", ROOT / "tools" / "strata_mcp.py")
+        mcp = importlib.util.module_from_spec(loaded)
+        loaded.loader.exec_module(mcp)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            chosen = root / "engine-cuda13"
+            other = root / "engine-cuda12"
+            chosen.mkdir()
+            other.mkdir()
+            out = root / "child.json"
+            (src / "setup.py").write_text(
+                "import importlib.util, json, os, sys\n"
+                "from pathlib import Path\n"
+                f"sys.path.insert(0, {str(ROOT)!r})\n"
+                f"spec = importlib.util.spec_from_file_location('strata_setup_real', {str(ROOT / 'setup.py')!r})\n"
+                "setup = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(setup)\n"
+                "import urllib.request\n"
+                "info = {\n"
+                "    'offline': os.environ.get('STRATA_OFFLINE_ENTRY'),\n"
+                "    'acquire': os.environ.get('STRATA_NO_ACQUIRE'),\n"
+                "    'path0': os.environ.get('PATH', '').split(os.pathsep)[0],\n"
+                "    'path': os.environ.get('PATH', ''),\n"
+                "}\n"
+                "def boom(*_a, **_k):\n"
+                "    info['opened'] = True\n"
+                "    raise AssertionError('urlopen')\n"
+                "urllib.request.urlopen = boom\n"
+                "try:\n"
+                "    setup._urlopen(urllib.request.Request('https://example.invalid/model.gguf'))\n"
+                "except SystemExit as exc:\n"
+                "    info['exit'] = exc.code\n"
+                f"Path({str(out)!r}).write_text(json.dumps(info), encoding='utf-8')\n"
+                "raise SystemExit(0)\n",
+                encoding="utf-8",
+            )
+            job = root / "job.json"
+            job.write_text(json.dumps({
+                "root": str(root), "result": str(root / "result.json"), "python": sys.executable,
+                "src": str(src), "args": [], "control": True, "job": "offline-job",
+            }), encoding="utf-8")
+            saved = {key: os.environ.get(key) for key in ("STRATA_OFFLINE_ENTRY", "STRATA_NO_ACQUIRE", "PATH")}
+            os.environ["STRATA_OFFLINE_ENTRY"] = "1"
+            os.environ["STRATA_NO_ACQUIRE"] = "1"
+            os.environ["PATH"] = str(chosen) + os.pathsep + "/usr/bin"
+            try:
+                code = mcp.install_job(str(job))
+            finally:
+                for key, value in saved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            self.assertEqual(code, 0, (root / "result.json").read_text(encoding="utf-8") if (root / "result.json").exists() else "no result")
+            info = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(info["offline"], "1")
+            self.assertIsNone(info["acquire"])
+            self.assertEqual(info["path0"], str(chosen))
+            self.assertNotIn(str(other), info["path"])
+            self.assertNotIn("opened", info)
+            self.assertEqual(info["exit"], 1)
+
+    def test_the_engine_server_treats_the_offline_entry_as_offline_without_the_flag(self):
+        import serve.server as server
+        self.assertFalse(server.offline_requested(False))
+        self.assertTrue(server.offline_requested(True))
+        with mock.patch.dict(os.environ, {"STRATA_OFFLINE_ENTRY": "1"}):
+            self.assertTrue(server.offline_requested(False))
+
     def test_plan_command_prints_the_address_and_a_missing_folder_exits_5(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "ready"
@@ -347,11 +424,22 @@ class CudaChoice(unittest.TestCase):
         dirs = package_lib_dirs(report.choice["folder"])
         self.assertIn(str(self.cuda13), dirs)
         self.assertNotIn(str(self.cuda12), dirs)
-        started = wo.begin(self.root, check_driver=True, driver_info=("581.80", None), archs=["sm_89"],
-                           spawn=lambda *args, **kwargs: mock.Mock())
-        self.assertIn(str(self.cuda13), started.env["PATH"])
+        model = self.root / "模型 目录" / "qwen.gguf"
+        model.parent.mkdir()
+        wo.write_header(model, "qwen4exp")
+        seen = {}
+
+        def spawn(argv, env=None, cwd=None):
+            seen["argv"], seen["env"], seen["cwd"] = argv, env, cwd
+            return mock.Mock()
+
+        started = wo.begin(self.root, model, check_driver=True, driver_info=("581.80", None), archs=["sm_89"], spawn=spawn)
+        self.assertEqual(started.env["PATH"].split(os.pathsep)[0], str(self.cuda13))
         self.assertNotIn(str(self.cuda12), started.env["PATH"])
         self.assertEqual(started.env["STRATA_OFFLINE_CUDA"], "13")
+        self.assertEqual(seen["env"]["STRATA_OFFLINE_MODEL"], str(model.parent.resolve()))
+        self.assertEqual(seen["env"]["STRATA_OFFLINE_ENTRY"], "1")
+        self.assertEqual(seen["env"]["PATH"].split(os.pathsep)[0], str(self.cuda13))
 
     def test_a_missing_driver_is_an_error_and_does_not_assume_cuda13(self):
         report = wo.preflight(self.root, driver=(None, "nvidia-smi was not found"))

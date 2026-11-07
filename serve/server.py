@@ -3744,6 +3744,16 @@ def gdn_stack_env(env: dict, cfg: dict, archs: dict | None = None) -> None:
             env.setdefault(k, v)
 
 
+def offline_requested(flag: bool) -> bool:
+    """True for --offline, and for the Windows offline entry.
+
+    `strata runtime start` does not pass --offline. The entry still puts STRATA_OFFLINE_ENTRY=1 on
+    the server, and that has to turn off remote image URLs, MCP subprocesses and profile network
+    sources. An ordinary start leaves the flag unset, so this stays off.
+    """
+    return bool(flag) or os.environ.get("STRATA_OFFLINE_ENTRY") == "1"
+
+
 def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -9045,6 +9055,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "{\"prefill_gpu\": 0, \"decode_gpu\": 1}; docs/SPLIT_SERVE.md)")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    a.offline = offline_requested(a.offline)
     if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
         print("[strata] WARNING: " + _rt, flush=True)
     global OPENS_BROWSER

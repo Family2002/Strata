@@ -36,6 +36,22 @@ test('the host routes consult the offline entry before the update feed', () => {
   assert.ok(index.indexOf('isOfflineEntry()', updates) < index.indexOf('checkComponentUpdates(', updates));
   const native = readFileSync(join(server, 'native-control.mjs'), 'utf8');
   assert.match(native, /STRATA_OFFLINE_ENTRY==='1'&&\(kind==='update-engine'\|\|kind==='update-strata'\)/);
+  assert.match(native, /STRATA_OFFLINE_MODEL/);
+});
+
+test('web search does not fetch while the offline entry is set', async () => {
+  const previous = process.env.STRATA_OFFLINE_ENTRY;
+  process.env.STRATA_OFFLINE_ENTRY = '1';
+  try {
+    const { apply } = await import('../server/agent/plugins/strata-search.mjs');
+    let provider;
+    apply({ web: { registerSearchProvider(value) { provider = value; } } }, { provider: 'duckduckgo' });
+    await assert.rejects(() => provider.search({ query: 'local model' }), /Nothing was contacted/);
+    assert.equal(provider.available(), false);
+  } finally {
+    if (previous === undefined) delete process.env.STRATA_OFFLINE_ENTRY;
+    else process.env.STRATA_OFFLINE_ENTRY = previous;
+  }
 });
 
 test('an install job does not ask the update feed when the offline entry is set', async () => {
