@@ -22,6 +22,7 @@ toolkit are not prerequisites: their DLLs have to be in the folder, or the closu
 from __future__ import annotations
 
 import os
+import re
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -118,13 +119,108 @@ def _reader():
     return gguf_reader
 
 
-def closure_issues(folder: Path, *, bundled_anywhere: bool = False) -> list[Issue]:
-    """PE files under `folder` whose imports Windows would not find.
+# Names a CUDA toolkit directory puts on PATH. The driver DLL (nvcuda.dll) is not one of these.
+_CUDA_TOOLKIT_PREFIXES = (
+    "cublas64_", "cublaslt64_", "cudart64_", "nvrtc64_", "cufft64_", "curand64_",
+    "cusparse64_", "cusolver64_", "nvjitlink64_",
+)
+_DLL_JOIN = re.compile(
+    r"os\.path\.join\(\s*os\.path\.dirname\(\s*__file__\s*\)\s*,(?P<parts>.*?)\)",
+    re.S,
+)
 
-    A DLL next to the importing file counts, and so does a DLL next to the runtime root (where
-    python.exe or node.exe lives): that is the application directory Windows searches. A DLL that
-    is only in some other subdirectory does not count, matching packaging/binary_deps.py, unless
-    BUILD.json lists that subdirectory in lib_dirs.
+
+def _machine_codes(package: dict) -> list[int]:
+    found = []
+    for arch in package.get("archs") or []:
+        kind, _, number = str(arch).partition("_")
+        if kind == "sm" and number.isdigit():
+            found.append(int(number))
+    return found
+
+
+def directory_has_cuda_toolkit_dll(folder: Path) -> bool:
+    """True when this directory itself holds a CUDA toolkit library (not a file in a subdirectory)."""
+    try:
+        names = [item.name.lower() for item in folder.iterdir() if item.is_file()]
+    except OSError:
+        return False
+    return any(name.startswith(_CUDA_TOOLKIT_PREFIXES) and name.endswith(".dll") for name in names)
+
+
+def path_without_cuda_toolkit(path: str, *, keep: list[str] | None = None) -> str:
+    """Drop PATH entries that contain a CUDA toolkit DLL.
+
+    The chosen engine directory is kept: its cuBLAS is the one the package shipped. A toolkit
+    installed on the PC is not. Windows still searches System32 for the driver without PATH.
+    """
+    keep_resolved: set[str] = set()
+    for item in keep or []:
+        try:
+            keep_resolved.add(str(Path(item).resolve()))
+        except OSError:
+            keep_resolved.add(str(item))
+    kept: list[str] = []
+    for entry in str(path or "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = str(Path(entry).resolve())
+        except OSError:
+            resolved = entry
+        if resolved in keep_resolved or not directory_has_cuda_toolkit_dll(Path(entry)):
+            kept.append(entry)
+    return os.pathsep.join(kept)
+
+
+def _added_dll_directories(folder: Path) -> dict[Path, set[Path]]:
+    """Directories a package adds with os.add_dll_directory, keyed by the package directory.
+
+    CPython 3.8+ does not search PATH or an arbitrary subdirectory for an extension's DLLs. It
+    searches the extension's own directory, the directory added at startup (python.exe's folder),
+    and directories an imported module passed to add_dll_directory. NumPy's delvewheel patch is
+    that last kind: numpy/__init__.py adds the sibling numpy.libs folder.
+    """
+    registered: dict[Path, set[Path]] = {}
+    for script in folder.rglob("*.py"):
+        try:
+            text = script.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "add_dll_directory" not in text:
+            continue
+        for match in _DLL_JOIN.finditer(text):
+            parts = []
+            for pardir, double, single in re.findall(r"(os\.pardir)|\"([^\"]+)\"|'([^']+)'", match.group("parts")):
+                if pardir:
+                    parts.append("..")
+                elif double or single:
+                    parts.append(double or single)
+            if not parts:
+                continue
+            target = script.parent
+            for part in parts:
+                target = target.parent if part == ".." else target / part
+            if target.is_dir():
+                registered.setdefault(script.parent, set()).add(target)
+    return registered
+
+
+def _names_in(folder: Path) -> set[str]:
+    try:
+        return {item.name.lower() for item in folder.iterdir() if item.is_file()}
+    except OSError:
+        return set()
+
+
+def closure_issues(folder: Path, *, python_runtime: bool = False) -> list[Issue]:
+    """PE files under `folder` whose imports the loader would not find.
+
+    An engine or Node binary is resolved like a normal Windows exe: its own directory, then
+    BUILD.json lib_dirs. PATH is not counted, so a CUDA toolkit on the PC cannot fill a gap.
+    A CPython tree also counts directories its packages add with add_dll_directory, and the
+    python.exe directory CPython adds at startup. A DLL that merely exists somewhere else in
+    the tree does not count.
     """
     if not folder.is_dir():
         return [Issue(str(folder), "missing local directory. Nothing was downloaded.")]
@@ -138,11 +234,8 @@ def closure_issues(folder: Path, *, bundled_anywhere: bool = False) -> list[Issu
                 lib_dirs.add(folder / str(rel))
         except (OSError, ValueError):
             pass
-    root_names = {item.name.lower() for item in folder.iterdir() if item.is_file()}
-    # A Python runtime also loads DLLs that its own packages add at import (numpy.libs). Those files are
-    # still inside this tree; a name that is not anywhere in the tree is a real gap. Engine and Node
-    # directories do not get this pass: Windows will not search an arbitrary subdirectory for them.
-    tree_names = {item.name.lower() for item in folder.rglob("*") if item.is_file()} if bundled_anywhere else set()
+    registered = _added_dll_directories(folder) if python_runtime else {}
+    app_names = _names_in(folder)
     skip = {".json", ".txt", ".md", ".cu", ".h", ".py", ".yaml", ".yml", ".metallib", ".bin", ".html", ".mjs", ".js", ".css", ".map", ".svg"}
     problems: list[Issue] = []
     for path in sorted(folder.rglob("*")):
@@ -154,20 +247,24 @@ def closure_issues(folder: Path, *, bundled_anywhere: bool = False) -> list[Issu
             continue
         if kind != "pe":
             continue
-        here = {item.name.lower() for item in path.parent.iterdir() if item.is_file()}
-        extra: set[str] = set()
+        allowed = set(app_names)
+        allowed.update(_names_in(path.parent))
         for lib in lib_dirs:
-            if lib.is_dir():
-                extra.update(item.name.lower() for item in lib.iterdir() if item.is_file())
+            allowed.update(_names_in(lib))
+        if python_runtime:
+            for parent in [path.parent, *path.parents]:
+                for added in registered.get(parent, ()):
+                    allowed.update(_names_in(added))
+                if parent == folder:
+                    break
         for name in names:
-            folded = name.lower()
-            if folded in here or folded in root_names or folded in extra or folded in tree_names:
+            if name.lower() in allowed:
                 continue
             if deps._match(name, deps.WINDOWS_OS, True) or deps._match(name, deps.WINDOWS_DRIVER, True):
                 continue
             problems.append(Issue(
                 str(path),
-                f"needs {name}, which is not next to it, not next to the runtime, and not a Windows or graphics-driver library. Nothing was downloaded."))
+                f"needs {name}, which is not next to it, not in a directory this runtime adds, and not a Windows or graphics-driver library. Nothing was downloaded."))
     return problems
 
 
@@ -272,15 +369,18 @@ def cuda_packages(root: Path) -> list[dict]:
 def choose_cuda(packages: list[dict], *, archs: list[str], driver: str | None, manual: str | None) -> tuple[dict | None, str]:
     """Pick one local CUDA package.
 
-    Automatic choice prefers the package with the higher driver floor (CUDA 13 over CUDA 12) and
-    only among packages whose manifest covers this GPU and this driver. A manual choice that does
-    not fit is refused. Nothing here reads whether a CUDA toolkit is installed.
+    When the card code is known, automatic choice prefers the higher driver floor (CUDA 13 over
+    CUDA 12) among packages whose manifest covers that card and this driver. When the card code
+    was not reported, a newer package is not guessed: the package that still includes the oldest
+    card code is used, and a package that only starts at sm_75 or newer is not chosen by itself.
+    A manual choice that fails the driver floor, or the card code when one was reported, is
+    refused. Nothing here reads whether a CUDA toolkit is installed.
     """
     from strata_control.engine_component import _version_key, arch_covers
 
-    def fits(package: dict) -> tuple[bool, str]:
+    def fits(package: dict, *, check_arch: bool) -> tuple[bool, str]:
         label = package["variant"] or package["name"]
-        if archs and package["archs"] and not arch_covers(package["archs"], archs):
+        if check_arch and archs and package["archs"] and not arch_covers(package["archs"], archs):
             return False, (f"{label} has code for {', '.join(package['archs'])}, this GPU is {', '.join(archs)}")
         floor = package["min_driver"]
         if floor:
@@ -295,25 +395,46 @@ def choose_cuda(packages: list[dict], *, archs: list[str], driver: str | None, m
         chosen = [item for item in packages if item["variant"] == wanted]
         if not chosen:
             return None, f"no local {wanted} engine package. Nothing was downloaded."
-        ok, why = fits(chosen[0])
+        ok, why = fits(chosen[0], check_arch=True)
         if not ok:
             return None, why + ". A CUDA toolkit on the PC does not replace the driver. Nothing was installed."
+        if not archs:
+            return chosen[0], (f"CUDA {manual} was requested. The GPU compute capability was not reported, "
+                               "so the card code was not checked. The driver meets this package's floor.")
         return chosen[0], f"CUDA {manual} was requested, and this GPU and driver meet that package's manifest."
     ranked = sorted(packages, key=lambda item: _version_key(item["min_driver"] or "0"), reverse=True)
     usable, reasons = [], []
     for item in ranked:
-        ok, why = fits(item)
+        ok, why = fits(item, check_arch=bool(archs))
         if ok:
             usable.append(item)
         elif why:
             reasons.append(why)
     if not usable:
         return None, " ".join(reasons) or "no local CUDA engine fits this PC. Nothing was installed."
+    if not archs:
+        coded = [item for item in usable if _machine_codes(item)]
+        if not coded:
+            return None, ("the GPU compute capability was not reported, and no local engine lists the card codes it can run. "
+                          "Nothing was selected.")
+        oldest = min(min(_machine_codes(item)) for item in coded)
+        if oldest >= 75:
+            return None, ("the GPU compute capability was not reported. Every local package starts at sm_75 or newer, "
+                          "so none can be chosen without knowing the card. Pass --cuda 12 or --cuda 13 when the card is known. "
+                          "Nothing was selected.")
+        wide = [item for item in coded if min(_machine_codes(item)) == oldest]
+        wide.sort(key=lambda item: _version_key(item["min_driver"] or "0"), reverse=True)
+        picked = wide[0]
+        skipped = [item["variant"] or item["name"] for item in usable if item is not picked]
+        note = (f"{picked['variant'] or picked['name']} is used because the GPU compute capability was not reported. "
+                "The package that still includes the oldest card code is used.")
+        if skipped:
+            note += " Not selected: " + ", ".join(skipped) + ". Pass --cuda 12 or --cuda 13 to choose one."
+        return picked, note
     picked = usable[0]
     other = " ".join(item["variant"] or item["name"] for item in usable[1:])
-    note = (f"{picked['variant'] or picked['name']} is used (driver {driver or 'unreported'}"
-            + (f", GPU {', '.join(archs)}" if archs else ", GPU compute capability was not reported")
-            + "). Its folder is the only engine directory put on the library path.")
+    note = (f"{picked['variant'] or picked['name']} is used (driver {driver or 'unreported'}, GPU {', '.join(archs)}). "
+            "Its folder is the only engine directory put on the library path.")
     if other:
         note += f" Also installed and left unused: {other}."
     return picked, note
@@ -392,7 +513,7 @@ def preflight(root: Path, model: Path | None = None, *, port: int = 8791, driver
             report.issues.extend(closure_issues(folder))
     python_runtime = root / "control" / "python"
     if python_runtime.is_dir():
-        report.issues.extend(closure_issues(python_runtime, bundled_anywhere=True))
+        report.issues.extend(closure_issues(python_runtime, python_runtime=True))
     report.argv, report.env = host_process(root, port, model)
     return report
 
@@ -498,7 +619,10 @@ def begin(root: Path, model: Path | None = None, port: int = 8791, *, plan: bool
     if chosen is not None:
         from strata_control.engine_component import package_lib_dirs
         dirs = package_lib_dirs(chosen["folder"])
-        report.env["PATH"] = os.pathsep.join([*dirs, report.env.get("PATH", "")]).strip(os.pathsep)
+        # The chosen package stays. A CUDA toolkit, or the other engine, is removed from PATH so a
+        # later LoadLibrary cannot bind the PC's cublas instead of the one in the package.
+        tail = path_without_cuda_toolkit(report.env.get("PATH", ""), keep=dirs)
+        report.env["PATH"] = os.pathsep.join([*dirs, tail]).strip(os.pathsep)
         variant = chosen["variant"]
         report.env["STRATA_OFFLINE_CUDA"] = "13" if variant.endswith("13") else "12" if variant.endswith("12") else variant
         if not plan:

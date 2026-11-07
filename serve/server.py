@@ -3789,6 +3789,10 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+    if offline or os.environ.get("STRATA_OFFLINE_ENTRY") == "1":
+        # The engine directory stays. A CUDA toolkit directory inherited from the user does not.
+        from strata_control.windows_offline import path_without_cuda_toolkit
+        env["PATH"] = path_without_cuda_toolkit(env.get("PATH", ""), keep=dirs)
     if cfg.get("backend") == "hip":
         hip_env_guard(env, cfg)
         note = sh_stream_warning(env, cfg)

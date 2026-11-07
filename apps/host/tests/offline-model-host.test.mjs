@@ -176,5 +176,21 @@ test('the host passes the offline model folder into the control install and does
   assert.equal(started.env.PATH.includes(other), false);
   assert.ok(install, `install was not sent\n${lines.map(item => item.name || item.kind).join(',')}\n${output}`);
   assert.equal(install.arguments.gguf_dir, model);
+  const tunnel = await fetch(`http://127.0.0.1:${port}/api/serving/tunnel`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'start', mode: 'quick' }),
+  });
+  assert.equal(tunnel.status, 400);
+  assert.match((await tunnel.json()).error, /Nothing was contacted/);
+  const share = await fetch(`http://127.0.0.1:${port}/api/serving/share`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(share.status, 400);
+  assert.match((await share.json()).error, /Nothing was contacted/);
+  const image = await fetch(`http://127.0.0.1:${port}/api/image-models/q4/install`, { method: 'POST' });
+  const imageBody = await image.json();
+  assert.notEqual(image.status, 200, JSON.stringify(imageBody));
+  assert.match(imageBody.error ?? '', /Nothing was contacted/);
   assert.deepEqual(calls(), [], `an offline screen called out\n${calls().join('\n')}\n${output}`);
 });

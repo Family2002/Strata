@@ -346,6 +346,51 @@ class OfflineEntry(unittest.TestCase):
             self.assertNotIn("opened", info)
             self.assertEqual(info["exit"], 1)
 
+    def test_python_dll_check_matches_the_loader_and_ignores_an_unused_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "python.exe").write_bytes(fake_pe(["KERNEL32.dll", "python312.dll"]))
+            (root / "python312.dll").write_bytes(fake_pe(["KERNEL32.dll"]))
+            package = root / "Lib" / "site-packages" / "numpy"
+            core = package / "_core"
+            libs = root / "Lib" / "site-packages" / "numpy.libs"
+            core.mkdir(parents=True)
+            libs.mkdir()
+            (libs / "libscipy_openblas.dll").write_bytes(fake_pe(["KERNEL32.dll"]))
+            (package / "__init__.py").write_text(
+                "import os\n"
+                "libs_dir = os.path.join(os.path.dirname(__file__), os.pardir, 'numpy.libs')\n"
+                "os.add_dll_directory(libs_dir)\n",
+                encoding="utf-8",
+            )
+            (core / "_multiarray.pyd").write_bytes(fake_pe(["python312.dll", "libscipy_openblas.dll"]))
+            unused = root / "unused"
+            unused.mkdir()
+            (unused / "secret.dll").write_bytes(fake_pe(["KERNEL32.dll"]))
+            (root / "plugin.pyd").write_bytes(fake_pe(["secret.dll"]))
+            text = "\n".join(issue.line() for issue in wo.closure_issues(root, python_runtime=True))
+            self.assertNotIn("_multiarray.pyd", text)
+            self.assertIn("secret.dll", text)
+            self.assertIn("plugin.pyd", text)
+
+    def test_engine_child_path_drops_a_cuda_toolkit_under_the_offline_entry(self):
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "engine"
+            toolkit = root / "toolkit"
+            engine.mkdir()
+            toolkit.mkdir()
+            (engine / "cublas64_13.dll").write_bytes(b"package")
+            (toolkit / "cublas64_12.dll").write_bytes(b"toolkit")
+            inherited = os.pathsep.join([str(engine), str(toolkit), "/usr/bin"])
+            with mock.patch.dict(os.environ, {"PATH": inherited, "STRATA_OFFLINE_ENTRY": "1"}):
+                env = server.child_env({"lib_dirs": [str(engine)]}, offline=False)
+            parts = env["PATH"].split(os.pathsep)
+            self.assertIn(str(engine), parts)
+            self.assertNotIn(str(toolkit), parts)
+            self.assertIn("/usr/bin", parts)
+
     def test_the_engine_server_treats_the_offline_entry_as_offline_without_the_flag(self):
         import serve.server as server
         self.assertFalse(server.offline_requested(False))
@@ -440,6 +485,50 @@ class CudaChoice(unittest.TestCase):
         self.assertEqual(seen["env"]["STRATA_OFFLINE_MODEL"], str(model.parent.resolve()))
         self.assertEqual(seen["env"]["STRATA_OFFLINE_ENTRY"], "1")
         self.assertEqual(seen["env"]["PATH"].split(os.pathsep)[0], str(self.cuda13))
+
+    def test_unknown_compute_capability_keeps_cuda12_and_does_not_guess_cuda13(self):
+        chosen, note = wo.choose_cuda(self.packages, archs=[], driver="581.80", manual=None)
+        self.assertEqual(chosen["variant"], "cuda12", note)
+        self.assertIn("cuda13", note)
+        only13 = [item for item in self.packages if item["variant"] == "cuda13"]
+        refused, why = wo.choose_cuda(only13, archs=[], driver="581.80", manual=None)
+        self.assertIsNone(refused, why)
+        self.assertIn("sm_75", why)
+        self.assertIn("Nothing was selected", why)
+        manual, told = wo.choose_cuda(self.packages, archs=[], driver="581.80", manual="13")
+        self.assertEqual(manual["variant"], "cuda13")
+        self.assertIn("not reported", told)
+        known, known_note = wo.choose_cuda(self.packages, archs=["sm_89"], driver="581.80", manual=None)
+        self.assertEqual(known["variant"], "cuda13", known_note)
+
+    def test_the_spawned_path_drops_a_cuda_toolkit_directory(self):
+        toolkit = self.root / "toolkit" / "bin"
+        toolkit.mkdir(parents=True)
+        (toolkit / "cublas64_13.dll").write_bytes(b"toolkit")
+        (self.cuda12 / "cudart64_12.dll").write_bytes(b"other-engine")
+        model = self.root / "模型 目录" / "qwen.gguf"
+        model.parent.mkdir(exist_ok=True)
+        wo.write_header(model, "qwen4exp")
+        _tree(self.root)
+        _manifest(self.cuda12, "cuda12", "576.02", ["sm_60", "sm_86", "sm_89", "compute_89"])
+        _manifest(self.cuda13, "cuda13", "580.65", ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"])
+        (self.cuda12 / "cudart64_12.dll").write_bytes(b"other-engine")
+        inherited = os.pathsep.join([str(toolkit), str(self.cuda12), "/usr/bin"])
+        seen = {}
+
+        def spawn(argv, env=None, cwd=None):
+            seen["env"] = env
+            return mock.Mock()
+
+        with mock.patch.dict(os.environ, {"PATH": inherited}):
+            started = wo.begin(self.root, model, check_driver=True, driver_info=("581.80", None), archs=["sm_120"], spawn=spawn)
+        path = started.env["PATH"].split(os.pathsep)
+        self.assertEqual(path[0], str(self.cuda13))
+        self.assertNotIn(str(toolkit), path)
+        self.assertNotIn(str(self.cuda12), path)
+        self.assertIn("/usr/bin", path)
+        self.assertEqual(seen["env"]["STRATA_OFFLINE_MODEL"], str(model.parent.resolve()))
+        self.assertEqual(seen["env"]["STRATA_OFFLINE_ENTRY"], "1")
 
     def test_a_missing_driver_is_an_error_and_does_not_assume_cuda13(self):
         report = wo.preflight(self.root, driver=(None, "nvidia-smi was not found"))

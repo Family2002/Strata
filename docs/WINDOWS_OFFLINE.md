@@ -17,9 +17,21 @@ Each package stays in its own directory. At start, only the chosen directory is 
 CUDA 13 is used when the GPU and the driver both meet its manifest. An installed CUDA toolkit is not read.
 `Start-Strata.cmd --cuda 12` or `--cuda 13` forces one package; a choice the manifest rejects exits instead of switching.
 
-The built file is `Strata-0.2.9-offline-windows-x64-cuda12-cuda13-setup.exe` (1672831334 bytes,
-SHA-256 2c4ec5321ac73a56857a145607a57451328575a42823a119535fed957518ca00). It was produced on Linux
-with makensis, then unpacked with 7-Zip and checked. It was not run on Windows and no GPU inference was run.
+The first built file, `Strata-0.2.9-offline-windows-x64-cuda12-cuda13-setup.exe` (1672831334 bytes,
+SHA-256 2c4ec5321ac73a56857a145607a57451328575a42823a119535fed957518ca00), is the old package from
+`bbb0ceb8`. It does not contain the later fixes. The corrected installer is
+`Strata-0.2.9-offline-r2-windows-x64-cuda12-cuda13-setup.exe`. Its SHA-256 is the file
+`offline-r2/*.sha256` next to the parts, and `OFFLINE_BUILD.txt` inside the package names the
+commit that was packed. It is built on Linux with makensis. It is not run on Windows here, and no
+GPU inference is run.
+
+When nvidia-smi does not report a compute capability, the start does not guess CUDA 13. It uses
+CUDA 12, the package that still includes the older card codes. If CUDA 13 is the only package and
+the card code is missing, it exits. A CUDA toolkit directory is removed from PATH for the host and
+for the engine process. The Python DLL check counts a DLL beside the file, beside python.exe, or
+in a directory that package adds with `os.add_dll_directory` (NumPy's `numpy.libs`). A DLL that
+only exists in some other subdirectory does not count. The page does not open a tunnel, turn on
+network sharing, download an image model, or run web search while this entry is set.
 
 ## 怎么用
 

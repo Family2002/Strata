@@ -1586,7 +1586,12 @@ async function api(req, res, path, method, url) {
   // --- serving ------------------------------------------------------------
   if (path === '/api/serving/tunnel' && method === 'GET') return json(res, 200, await cloudflare.inspect());
   if (path === '/api/serving/tunnel' && method === 'POST') {
-    try { const body = await readBody(req); if (body.action === 'stop') await cloudflare.stop(); else if (body.action === 'start') await cloudflare.start(body); else if (body.action === 'prepare') await cloudflare.prepare(); else throw new Error('Unknown tunnel action.'); return json(res, 200, serving.state()); }
+    try {
+      const body = await readBody(req);
+      if (isOfflineEntry() && body.action !== 'stop') throw new Error('The offline entry does not open a tunnel. Nothing was contacted.');
+      if (body.action === 'stop') await cloudflare.stop(); else if (body.action === 'start') await cloudflare.start(body); else if (body.action === 'prepare') await cloudflare.prepare(); else throw new Error('Unknown tunnel action.');
+      return json(res, 200, serving.state());
+    }
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/monitor/snapshot' && method === 'POST') {
@@ -1594,7 +1599,12 @@ async function api(req, res, path, method, url) {
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/serving/share' && method === 'POST') {
-    try { const body = await readBody(req); if (body.enabled === true) await localShare.start(); else await localShare.stop(); return json(res, 200, serving.state()); }
+    try {
+      const body = await readBody(req);
+      if (isOfflineEntry() && body.enabled === true) throw new Error('The offline entry does not share this server on the network. Nothing was contacted.');
+      if (body.enabled === true) await localShare.start(); else await localShare.stop();
+      return json(res, 200, serving.state());
+    }
     catch(e) { return error(res, 400, e.message); }
   }
   if (path === '/api/serving' && method === 'GET') return json(res, 200, serving.state());

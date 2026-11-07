@@ -23,8 +23,9 @@ import node_runtime  # noqa: E402
 from strata_control.windows_offline import preflight  # noqa: E402
 
 CACHE = Path("/tmp/strata-offline-cache")
-STAGE = Path("/tmp/strata-offline-stage")
-OUT_DIR = Path("/opt/cursor/artifacts")
+STAGE = Path("/tmp/strata-offline-stage-r2")
+OUT_DIR = Path("/opt/cursor/artifacts/offline-r2")
+OUT_NAME = "Strata-0.2.9-offline-r2-windows-x64-cuda12-cuda13-setup.exe"
 
 PINS = {
     "node.zip": (
@@ -170,8 +171,10 @@ def main() -> int:
           驱动门槛以引擎清单为准：NVIDIA 580.65 或更新
 
         启动时用 nvidia-smi 读取驱动版本和显卡计算能力，按上面的清单选择。
-        两套都满足时用 CUDA 13。驱动或显卡达不到 CUDA 13 时用 CUDA 12。
-        电脑里装了 CUDA Toolkit 13 不会被当成驱动已经达标。
+        显卡代码读到了、并且两套都满足时，用 CUDA 13。驱动或显卡达不到 CUDA 13 时用 CUDA 12。
+        没有读到显卡计算能力时，不猜 CUDA 13：改用仍包含较旧显卡代码的 CUDA 12。
+        只有 CUDA 13、又不知道显卡代码时，程序退出，不静默选用。
+        电脑里装了 CUDA Toolkit 不会被当成驱动已经达标，它的目录也不会留在程序的 PATH 里。
         手动指定：Start-Strata.cmd --cuda 13 或 --cuda 12。指定的那套若不符合清单，程序退出并说明原因，不会偷偷改用另一套。
 
         没有网也能安装和第一次打开。不安装 WebView2、Python、Node、VC++ 或 CUDA Toolkit。
@@ -194,8 +197,13 @@ def main() -> int:
         "node.exe in Node 24.12.0 imports only Windows system DLLs.\n",
         encoding="utf-8")
 
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+    (payload / "OFFLINE_BUILD.txt").write_text(
+        f"offline-r2\ncommit {commit}\nengines cuda12 cuda13\nno model weights\n",
+        encoding="utf-8",
+    )
     nsi = STAGE / "offline.nsi"
-    outfile = Path("/tmp") / "Strata-0.2.9-offline-windows-x64-cuda12-cuda13-setup.exe"
+    outfile = Path("/tmp") / OUT_NAME
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     nsi.write_text(textwrap.dedent(f"""
         Unicode true
@@ -213,15 +221,45 @@ def main() -> int:
     """).lstrip(), encoding="utf-8")
     subprocess.run(["makensis", "-NOCD", str(nsi)], check=True)
     digest = sha256(outfile)
-    # The sync folder rejects one file around 128MB (close returns EINVAL). Keep the installer on
-    # local disk and also write 48MB parts there.
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # The sync folder rejects one file around 128MB. Keep the installer on local disk and write
+    # 24MiB parts under offline-r2/. Do not touch the previous package in the artifacts root.
     part_prefix = OUT_DIR / (outfile.name + ".part-")
-    subprocess.run(["split", "-b", "48M", "-d", "-a", "2", str(outfile), str(part_prefix)], check=True)
-    (OUT_DIR / f"{outfile.name}.sha256").write_text(
-        f"{digest}  {outfile.name}\nsize {outfile.stat().st_size}\n", encoding="utf-8")
+    subprocess.run(["split", "-b", "24M", "-d", "-a", "2", str(outfile), str(part_prefix)], check=True)
+    parts = sorted(OUT_DIR.glob(outfile.name + ".part-*"))
+    lines = [f"{digest}  {outfile.name}", f"size {outfile.stat().st_size}", f"commit {commit}", ""]
+    total = 0
+    for part in parts:
+        size = part.stat().st_size
+        total += size
+        if size > 24 * 1024 * 1024:
+            raise SystemExit(f"{part.name} is {size} bytes, over 24MiB")
+        lines.append(f"{sha256(part)}  {part.name}  {size}")
+    if total != outfile.stat().st_size:
+        raise SystemExit(f"parts sum {total} != installer {outfile.stat().st_size}")
+    lines.append(f"parts {len(parts)}")
+    lines.append(f"parts_bytes {total}")
+    (OUT_DIR / f"{outfile.name}.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (OUT_DIR / "使用说明.txt").write_text(readme, encoding="utf-8")
-    print(f"{outfile} {outfile.stat().st_size} {digest}")
+    (OUT_DIR / "分卷清单.txt").write_text(
+        "这些分卷只用于把安装包传到能上传的地方。最终给 Windows 用户的是拼回后的一个 exe，用户不需要自己拼接。\n"
+        f"完整文件：{outfile.name}\nSHA-256：{digest}\n字节：{outfile.stat().st_size}\n提交：{commit}\n"
+        "在本目录执行 powershell -NoProfile -ExecutionPolicy Bypass -File .\\重组分卷.ps1 可拼回并核对。\n",
+        encoding="utf-8",
+    )
+    (OUT_DIR / "重组分卷.ps1").write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$name = '{outfile.name}'\n"
+        "$parts = Get-ChildItem -File ($name + '.part-*') | Sort-Object Name\n"
+        "if (-not $parts) { throw 'no parts' }\n"
+        "$out = [System.IO.File]::Create((Join-Path (Get-Location) $name))\n"
+        "try { foreach ($part in $parts) { $in = [System.IO.File]::OpenRead($part.FullName); $in.CopyTo($out); $in.Close() } }\n"
+        "finally { $out.Close() }\n"
+        "$hash = (Get-FileHash -Algorithm SHA256 $name).Hash.ToLower()\n"
+        f"if ($hash -ne '{digest}') {{ throw \"hash $hash\" }}\n"
+        "Write-Output \"ok $hash\"\n",
+        encoding="utf-8",
+    )
+    print(f"{outfile} {outfile.stat().st_size} {digest} parts {len(parts)}")
     return 0
 
 
