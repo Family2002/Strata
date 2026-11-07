@@ -29,11 +29,17 @@ and both the card and the driver meet its manifest. If the compute capability wa
 CUDA 13 is not guessed. `Start-Strata.cmd --cuda 12` or `--cuda 13` forces one package; a choice
 the manifest rejects exits instead of switching.
 
-The 0.2.11 installer is `Strata-0.2.11-offline-r1-windows-x64-cuda12-cuda13-setup.exe`
-(1690656188 bytes, SHA-256 `f5bfbbccc3ecb93264ac0a370d3e7fcd5adccb8f892f334c451393916e7455ce`).
-`OFFLINE_BUILD.txt` inside it names commit `25987764a054e77c0dbcb29969628c12d19abc96`. It was built
-on Linux with makensis and unpacked with 7-Zip. It was not run on Windows, and no GPU inference
-was run. 68 parts of at most 24MiB are under `offline-v0.2.11/` and sum to the same byte count.
+`Strata-0.2.11-offline-r1-windows-x64-cuda12-cuda13-setup.exe` (1690656188 bytes, SHA-256
+`f5bfbbccc3ecb93264ac0a370d3e7fcd5adccb8f892f334c451393916e7455ce`, commit `25987764`) starts on
+Windows and stops with `No module named 'binary_deps'`. It is left under `offline-v0.2.11/`.
+
+The replacement is `Strata-0.2.11-offline-r2-windows-x64-cuda12-cuda13-setup.exe` (1690660836 bytes,
+SHA-256 `9c329d6918c67fd3aca10d11d1522aadc32f3f0ec0f95183705f1df60830cfe6`). `OFFLINE_BUILD.txt`
+inside it names commit `e2f3f003bbf120af07aa731188de55957114d59d`. It adds
+`control/packaging/binary_deps.py`. It was built on Linux with makensis and checked by extracting
+those two files. It was not run on Windows here, and no GPU inference was run. 68 parts of at most
+24MiB are under `offline-v0.2.11-r2/` and sum to the same byte count. Installing it again into
+`%LOCALAPPDATA%\StrataOffline` overwrites the old files. There is no uninstaller.
 
 The earlier package `Strata-0.2.9-offline-r2-windows-x64-cuda12-cuda13-setup.exe` (1672834165 bytes,
 SHA-256 `6a0c2297e799932a25920a35f312eac3419d69547aacdee81d9c79e1d4fd5a48`, commit `12275911`) is
