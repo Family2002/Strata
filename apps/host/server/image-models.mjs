@@ -62,6 +62,7 @@ export function createImageModels({ dataDir, modelsDir, real = false, changed = 
     persist(); emit(); return library();
   }
   function install(id) {
+    if (process.env.STRATA_OFFLINE_ENTRY === '1') throw new Error('The offline entry does not download an image model. Nothing was contacted.');
     const v = catalog.variants.find(v => v.id === id);
     if (!v) throw new Error('Choose an image version to download.');
     if (installed(v) || jobs.has(id)) return library();

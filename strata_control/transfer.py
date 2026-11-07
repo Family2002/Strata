@@ -165,11 +165,20 @@ def _open_small(request, timeout: float, limit: int) -> bytes:
         return response.read(limit + 1)
 
 
+def refuse_offline_network(location: str) -> None:
+    """The Windows offline entry never fetches http(s). A local path or file URL is left alone."""
+    if os.environ.get("STRATA_OFFLINE_ENTRY", "").strip() != "1":
+        return
+    if kind_of(location) in ("http", "https"):
+        raise TransferError(f"missing local file for {location}. The offline entry does not download it.")
+
+
 def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) -> bytes:
     """A small document (the feed, its signature). Larger than `limit` is refused, not truncated.
     A web address gets one more try when the first one times out or the connection fails: about one request in 25 to github.com hung for the whole
     timeout on a PC whose next 24 answered in half a second (measured on a 3060 PC: the first-run card said "offline" a moment before the install's
     own read worked). The first try therefore waits at most 12 s; the second the full `timeout`."""
+    refuse_offline_network(location)
     kind = kind_of(location)
     _SERVER_DATE.clear()                                 # only the answer of this read counts
     try:
@@ -219,6 +228,7 @@ def download(location: str, partial: Path, *, size: int, sha256: str,
     """Fetch `location` into `partial` (resuming what is there) and return it once it has exactly `size` bytes and the
     SHA-256 `sha256`. An interrupted transfer keeps the partial file (`TransferError.resumable`); a complete file with the
     wrong hash is deleted, because resuming cannot repair it."""
+    refuse_offline_network(location)
     partial = Path(partial)
     partial.parent.mkdir(parents=True, exist_ok=True)
     have = partial.stat().st_size if partial.exists() else 0

@@ -58,14 +58,13 @@ try {
     } else {
         Write-Output 'fetch-node: sha256 verified against the recorded digest'
     }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zipFile = [IO.Compression.ZipFile]::OpenRead($Zip)
-    try {
-        $entry = $zipFile.GetEntry("node-v$NodeVersion-$Target/node.exe")
-        if (-not $entry) { Fail "node.exe is not inside $Archive" }
-        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $Installed, $true)
-    } finally { $zipFile.Dispose() }
+    # node.exe imports the VC++ DLLs beside it in the official zip. The closure check extracts those
+    # too and refuses a zip that does not contain one. This script is the preparation environment only.
+    $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+    $Py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $Py) { Fail "the preparation environment needs python on PATH to unpack node.exe and the DLLs it imports. The PC that runs Strata does not run this script." }
+    & $Py.Source (Join-Path $Repo 'packaging\node_runtime.py') --zip $Zip --dest $Dest
+    if ($LASTEXITCODE -ne 0) { Fail "the Node runtime closure failed. Nothing else was installed." }
     Write-Output "fetch-node: installed at $Installed"
 } finally {
     Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
